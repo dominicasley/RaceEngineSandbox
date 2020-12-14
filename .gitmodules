@@ -1,7 +1,6 @@
-[submodule "vendor/di"]
-	path = Mogwai2D/vendor/di
-	url = https://github.com/boost-experimental/di.git
+[submodule "vendor/tweeny"]
+	path = vendor/tweeny
+	url = git@github.com:mobius3/tweeny.git
 [submodule "vendor/spdlog"]
-	path = Mogwai2D/vendor/spdlog
+	path = vendor/spdlog
 	url = git@github.com:gabime/spdlog.git
-
