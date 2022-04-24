@@ -32,7 +32,7 @@ void FPSCameraController::update(Camera* camera)
     );
 
     velocity *= 1 / (1 + (engine.window.delta() * 15.0f));
-    acceleration = glm::vec3(10.0f * engine.window.delta());
+    acceleration = glm::vec3(0.1f / engine.window.delta());
 
     if (engine.window.keyPressed(GLFW_KEY_D))
     {

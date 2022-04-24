@@ -2,6 +2,7 @@
 
 #include <Engine.h>
 #include "../Camera/FPSCameraController.h"
+#include "../Entities/DinosaurEntity.h"
 
 class WaterLevel
 {
@@ -13,6 +14,8 @@ private:
     RenderableEntity* player;
     RenderableEntity* cpu;
     RenderableEntity* ball;
+    RenderableEntity* sky;
+    std::unique_ptr<DinosaurEntity> dinosaurEntity;
 
     glm::vec3 velocity = glm::vec3(0.0f);
     glm::vec3 cpuVelocity = glm::vec3(0.0f);

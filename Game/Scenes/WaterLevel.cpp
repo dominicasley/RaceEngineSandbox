@@ -1,5 +1,5 @@
-
 #include "WaterLevel.h"
+
 
 WaterLevel::WaterLevel(Engine& engine) : engine(engine), cameraController(engine)
 {
@@ -10,124 +10,136 @@ WaterLevel::WaterLevel(Engine& engine) : engine(engine), cameraController(engine
     engine.camera.setRoll(camera, 0, 1, 0);
     engine.camera.lookAtPoint(camera, 0, 0, 0);
 
-    const auto[vert, frag, pbrFragmentShader, paddleModel, ballModel, water, playerModel, monsterSkeleton, monsterAnimation] = ForkJoin::join(
+    const auto [
+        presentationVert,
+        presentationFrag,
+        vert,
+        pbrFragmentShader,
+        hdrVertexShader,
+        hdrFragmentShader,
+        water,
+        skyboxModel,
+        skyboxVertexShader,
+        skyboxFragmentShader,
+        front,
+        back,
+        left,
+        right,
+        top,
+        bottom,
+        frontLarge,
+        backLarge,
+        leftLarge,
+        rightLarge,
+        topLarge,
+        bottomLarge
+    ] = ForkJoin::join(
+        engine.resource.loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
+        engine.resource.loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
         engine.resource.loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
-        engine.resource.loadTextFileAsync("assets/Shaders/PassThroughFragmentShader.glsl"),
         engine.resource.loadTextFileAsync("assets/Shaders/PbrFragmentShader.glsl"),
-        engine.resource.loadModelAsync("assets/Models/Paddle/Paddle.glb"),
-        engine.resource.loadModelAsync("assets/Models/Box/Box.glb"),
+        engine.resource.loadTextFileAsync("assets/Shaders/HdrVertexShader.glsl"),
+        engine.resource.loadTextFileAsync("assets/Shaders/HdrFragmentShader.glsl"),
         engine.resource.loadModelAsync("assets/Models/water/water.glb"),
-        engine.resource.loadModelAsync("assets/Models/trex/source/bawanglong.glb"),
-        engine.resource.loadSkeletonAsync("assets/Models/trex/source/skeleton.ozz"),
-        engine.resource.loadAnimationAsync("assets/Models/trex/source/Bip001_Take 001_BaseLayer.ozz")
+        engine.resource.loadModelAsync("assets/Models/SkyBox/SkyBox.glb"),
+        engine.resource.loadTextFileAsync("assets/Shaders/SkyboxVertexShader.glsl"),
+        engine.resource.loadTextFileAsync("assets/Shaders/SkyboxFragmentShader.glsl"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/pz.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/nz.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/nx.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/px.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/py.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/Field/ny.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/pz.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/nz.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/nx.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/px.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/py.hdr"),
+        engine.resource.loadTextureAsync("assets/Textures/Skies/FieldLarge/ny.hdr")
     );
 
-    auto shader = engine.shader.createShader(
-        "basic",
-        ShaderDescriptor {
-            .vertexShaderSource = vert,
-            .fragmentShaderSource = frag
+    auto presentationShader = engine.shader.createShader(
+        "present",
+        ShaderDescriptor{
+            .vertexShaderSource = presentationVert,
+            .fragmentShaderSource = presentationFrag
         });
 
     auto pbrShader = engine.shader.createShader(
         "pbr",
-        ShaderDescriptor {
+        ShaderDescriptor{
             .vertexShaderSource = vert,
             .fragmentShaderSource = pbrFragmentShader
         });
 
-    if (paddleModel)
+    auto skyboxShader = engine.shader.createShader(
+        "skybox",
+        ShaderDescriptor{
+            .vertexShaderSource = skyboxVertexShader,
+            .fragmentShaderSource = skyboxFragmentShader
+        });
+
+    auto hdrShader = engine.shader.createShader(
+        "hdr",
+        ShaderDescriptor{
+            .vertexShaderSource = hdrVertexShader,
+            .fragmentShaderSource = hdrFragmentShader
+        });
+
+    auto environmentMap = engine.cubeMap.create("sky", front, back, left, right, top, bottom);
+    auto skybox = engine.cubeMap.create("sky_detail", frontLarge, backLarge, leftLarge, rightLarge, topLarge,
+                                        bottomLarge);
+
+    auto hdr = engine.postProcess.create("hdr", hdrShader.value());
+
+    for (auto& attachment: engine.camera.getOutputBuffer(camera).attachments)
     {
-        engine.renderer.upload(paddleModel);
-
-        player = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = paddleModel,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = shader.value()
-            });
-
-        engine.sceneManager.setPosition(player->node, 0.0f, 0.0f, -300.0f);
-        engine.sceneManager.setScale(player->node, 10.0f, 10.0f, 10.0f);
-
-        cpu = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = paddleModel,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = shader.value()
-            });
-
-        engine.sceneManager.setPosition(cpu->node, 0.0f, 0.0f, 300.0f);
-        engine.sceneManager.setScale(cpu->node, 10.0f, 10.0f, 10.0f);
+        engine.postProcess.addInput(hdr, attachment);
     }
 
-    if (ballModel)
-    {
-        engine.renderer.upload(ballModel);
+    engine.camera.addPostProcess(camera, hdr);
 
-        ball = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = ballModel,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = pbrShader.value()
-            });
+    auto hdrPostProcess = engine.memoryStorage.postProcesses.get(hdr);
 
-        engine.sceneManager.setPosition(ball->node, 0.0f, 0.0f, 0.0f);
-        engine.sceneManager.setScale(ball->node, 10.0f, 10.0f, 10.0f);
+    auto outputAttachment = engine.fbo.getAttachmentsOfType(
+        engine.memoryStorage.frameBuffers.get(hdrPostProcess.output.value()),
+        FboAttachmentType::Color
+    );
 
-        auto light = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = ballModel,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = pbrShader.value()
-            });
+    engine.presenter.setPresenter(
+        Presenter{
+            .output = outputAttachment.front(),
+            .shader = presentationShader.value()
+        });
 
-        engine.sceneManager.setPosition(light->node, 0.0f, 350.0f, 350.0f);
-        engine.sceneManager.setScale(light->node, 2.0f, 2.0f, 2.0f);
-    }
 
-    if (playerModel)
-    {
-        engine.renderer.upload(playerModel);
+    auto ground = engine.scene.createEntity(
+        scene,
+        CreateRenderableModelDTO{
+            .node = engine.sceneManager.createNode(scene),
+            .shader = pbrShader.value(),
+            .model = water
+        });
 
-        auto p = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = playerModel,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = pbrShader.value()
-            });
+    engine.sceneManager.setPosition(ground->node, 0.0f, -25.0f, 0.0f);
+    engine.sceneManager.setScale(ground->node, 200.0f, 200.0, 200.0f);
 
-        engine.sceneManager.setPosition(p->node, 50.0f, 20.0f, 0.0f);
-        engine.sceneManager.setScale(p->node, 0.25f, 0.25f, 0.25f);
-        engine.entity.setSkeleton(p->meshes.front(), monsterSkeleton);
-        engine.entity.addAnimation(p->meshes.front(), monsterAnimation);
-        engine.entity.setAnimation(p->meshes.front(), 0);
-    }
+    sky = engine.scene.createEntity(
+        scene,
+        CreateRenderableSkyboxDTO{
+            .node = engine.sceneManager.createNode(scene),
+            .shader = skyboxShader.value(),
+            .cubeMap = skybox,
+            .model = skyboxModel
+        });
 
-    if (water)
-    {
-        engine.renderer.upload(water);
+    engine.sceneManager.setScale(sky->node, -2500.0f, -2500.0f, -2500.0f);
 
-        auto ground = engine.scene.createEntity(
-            scene,
-            RenderableEntityDesc {
-                .model = water,
-                .node = engine.sceneManager.createNode(scene),
-                .shader = pbrShader.value()
-            });
-
-        ground->meshes.front().material->repeat = glm::vec2(10.0f, 10.0f);
-        engine.sceneManager.setPosition(ground->node, 0.0f, -25.0f, 0.0f);
-        engine.sceneManager.setScale(ground->node, 200.0f, 200.0, 200.0f);
-    }
+    dinosaurEntity = std::make_unique<DinosaurEntity>(engine, scene);
 }
 
 void WaterLevel::step()
 {
     cameraController.update(camera);
+    engine.sceneManager.setPosition(sky->node, camera->position.x, camera->position.y, camera->position.z);
 }
