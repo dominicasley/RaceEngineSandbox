@@ -3,19 +3,18 @@
 #include <Engine.h>
 #include "../Camera/FPSCameraController.h"
 #include "../Entities/DinosaurEntity.h"
+#include "../Entities/CarEntity.h"
+#include "../Entities/Bollard.h"
 
 class WaterLevel
 {
 private:
     Engine& engine;
-    Scene* scene;
-    Camera* camera;
+    Scene& scene;
+    Camera& camera;
     FPSCameraController cameraController;
-    RenderableEntity* player;
-    RenderableEntity* cpu;
-    RenderableEntity* ball;
-    RenderableEntity* sky;
-    std::unique_ptr<DinosaurEntity> dinosaurEntity;
+
+    RenderableModel* sky;
 
     glm::vec3 velocity = glm::vec3(0.0f);
     glm::vec3 cpuVelocity = glm::vec3(0.0f);

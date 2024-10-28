@@ -7,10 +7,10 @@ FPSCameraController::FPSCameraController(Engine& engine) : engine(engine)
 
 }
 
-void FPSCameraController::update(Camera* camera)
+void FPSCameraController::update(Camera& camera)
 {
     auto state = engine.window.state();
-    auto[cmx, cmy] = engine.window.mousePosition();
+    auto [cmx, cmy] = engine.window.mousePosition();
     engine.window.setMousePosition(state.windowWidth / 2, state.windowHeight / 2);
 
     auto rx = rotateX - 0.001f * (cmx - mx);
@@ -32,7 +32,7 @@ void FPSCameraController::update(Camera* camera)
     );
 
     velocity *= 1 / (1 + (engine.window.delta() * 15.0f));
-    acceleration = glm::vec3(0.1f / engine.window.delta());
+    acceleration = glm::vec3(0.005f / engine.window.delta());
 
     if (engine.window.keyPressed(GLFW_KEY_D))
     {

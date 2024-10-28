@@ -14,7 +14,7 @@ class FPSCameraController
 
 public:
     explicit FPSCameraController(Engine& engine);
-    void update(Camera* camera);
+    void update(Camera& camera);
 };
 
 

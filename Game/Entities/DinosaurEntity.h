@@ -8,34 +8,34 @@ class DinosaurEntity
 protected:
     constexpr const static auto load = [](Engine& engine) {
         return ForkJoin::join(
-            engine.resource.loadModelAsync("assets/Models/trex/source/trex.glb"),
-            engine.resource.loadModelAsync("assets/Models/Box/Box.glb"),
-            engine.resource.loadSkeletonAsync("assets/Models/trex/source/skeleton.ozz"),
-            engine.resource.loadAnimationAsync("assets/Models/trex/source/Bip001_Take 001_BaseLayer.ozz")
+            engine.resource.loadModelAsync("assets/Models/test.glb")
         );
     };
 
 public:
-    DinosaurEntity(Engine& engine, Scene* scene) : entity(engine.entity.createEntity())
+    DinosaurEntity(Engine& engine, Scene& scene) : entity(engine.entity.createEntity()),
+                                                   node(engine.sceneManager.createNode(scene))
     {
-        const auto [_, model, skeleton, animation] = load(engine);
-        drawableComponent = engine.entity.addComponent<Drawable>(entity);
+        const auto [model] = load(engine);
 
-        drawableComponent->renderableEntity = engine.scene.createEntity(
-            scene,
-            CreateRenderableModelDTO{
-                .node = engine.sceneManager.createNode(scene),
-                .shader = engine.shader.getShaderByName("pbr").value(),
-                .model = model
-            });
+        const auto drawableComponent = engine.entity.addComponent<Drawable>(
+            entity,
+            engine.scene.createEntity(
+                scene,
+                CreateRenderableModelDTO {
+                    .node = node,
+                    .shader = engine.shader.getShaderByName("pbr").value(),
+                    .model = model
+                }
+            )
+        );
 
-        engine.sceneManager.setPosition(drawableComponent->renderableEntity->node, 40.0f, 0.0f, 0.0f);
-        engine.sceneManager.setScale(drawableComponent->renderableEntity->node, 20.0f, 20.0f, 20.0f);
+        engine.sceneManager.setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
 private:
     Entity& entity;
-    std::shared_ptr<Drawable> drawableComponent;
+    SceneNode& node;
 };
 
 

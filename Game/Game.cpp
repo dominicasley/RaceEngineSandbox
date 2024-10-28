@@ -4,7 +4,7 @@
 
 Game::Game() : waterLevel(engine)
 {
-    DotNetHost host;
+    // DotNetHost host;
 }
 
 void Game::run()

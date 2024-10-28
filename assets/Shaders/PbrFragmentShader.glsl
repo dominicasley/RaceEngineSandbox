@@ -27,6 +27,15 @@ uniform vec2 textureRepeat;
 uniform mat3 modelView3x3Matrix;
 uniform mat3 normalMatrix;
 uniform mat4 localToWorld4x4Matrix;
+uniform float u_roughness;
+uniform float u_metalness;
+uniform vec4 u_baseColour;
+
+uniform bool u_useDiffuseTexture;
+uniform bool u_useNormalTexture;
+uniform bool u_useSpecularTexture;
+uniform bool u_useEmissiveTexture;
+uniform bool u_useOcclusionTexture;
 
 layout(binding = 0) uniform sampler2D diffuseTexture;
 layout(binding = 1) uniform sampler2D normalTexture;
@@ -90,7 +99,7 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
     vec3 specular = mix(vec3(0.04), albedo.rgb, metallic);
 
-    vec3 nm = tangentBinormalNormalMatrix * normalize(texture(normalTexture, textureCoordinates * textureRepeat).xyz * 2.0 - 1.0);
+    vec3 nm = tangentBinormalNormalMatrix * normalMap;
     mat3x3 tnrm = transpose(normalMatrix);
     vec3 incident_eye = normalize(vec3(positionInWorldSpace) - cameraPosition);
     vec3 reflection_vector = -reflect(incident_eye, normalize(normalsInWorldSpace));
@@ -141,16 +150,10 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
 void main()
 {
-    vec4 albedo = texture(diffuseTexture, textureCoordinates * textureRepeat);
-
-    if (albedo.a < 0.01)
-    {
-        discard;
-    }
-
-    vec3 normalMap = normalize(texture(normalTexture, textureCoordinates * textureRepeat).xyz * 2.0 - 1.0);
-    vec4 specularMap = texture(specularTexture, textureCoordinates * textureRepeat);
+    vec4 albedo = u_useDiffuseTexture ? texture(diffuseTexture, textureCoordinates * textureRepeat) : u_baseColour;
+    vec3 normalMap = u_useNormalTexture ? normalize(texture(normalTexture, textureCoordinates * textureRepeat).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
+    vec4 specularMap = u_useSpecularTexture ? texture(specularTexture, textureCoordinates * textureRepeat) : vec4(1.0, u_roughness, u_metalness, 1.0);
     vec3 colour = ads(0, albedo, specularMap, normalMap);
 
-    fragColor = vec4(colour, 1.0f);
+    fragColor = vec4(colour, albedo.a);
 }

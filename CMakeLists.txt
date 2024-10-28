@@ -3,9 +3,12 @@
 #
 cmake_minimum_required (VERSION 3.8)
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 link_directories(../Engine/vendor/FreeImage/bin)
 link_libraries(FreeImage)
+
+add_definitions(-D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS)
 
 # Add source to this project's executable.
 set(EXECUTABLE_OUTPUT_PATH "bin")
@@ -19,7 +22,11 @@ add_executable (
         Game/Camera/FPSCameraController.cpp
         Game/Camera/FPSCameraController.h
         Game/DotNetHost.cpp
-        Game/DotNetHost.h Game/Entities/DinosaurEntity.cpp Game/Entities/DinosaurEntity.h)
+        Game/DotNetHost.h
+        Game/Entities/DinosaurEntity.cpp
+        Game/Entities/DinosaurEntity.h
+        Game/Entities/CarEntity.h
+)
 
 add_subdirectory(vendor/tweeny vendor/tweeny)
 
