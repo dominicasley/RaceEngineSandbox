@@ -14,10 +14,11 @@ namespace osr
 export class FPSCameraController
 {
     raceengine::Engine& engine;
+    bool firstUpdate = true;
     double mx = 0;
     double my = 0;
     double rotateX = 0;
-    double rotateY = 0;
+    double rotateY = -0.75;
     glm::vec3 velocity = glm::vec3(0.0f);
     glm::vec3 acceleration = glm::vec3(0.0f);
 
@@ -41,6 +42,15 @@ void FPSCameraController::update(Camera& camera)
     auto state = engine.window().state();
     auto [cmx, cmy] = engine.window().mousePosition();
     engine.window().setMousePosition(state.windowWidth / 2, state.windowHeight / 2);
+
+    // The first update has no previous cursor sample; without this guard the cursor's absolute
+    // position becomes a huge one-off rotation (0.001 rad/px from an arbitrary origin).
+    if (firstUpdate)
+    {
+        firstUpdate = false;
+        mx = cmx;
+        my = cmy;
+    }
 
     auto rx = rotateX - static_cast<double>(0.001f) * (cmx - mx);
     auto ry = rotateY - static_cast<double>(0.001f) * (cmy - my);

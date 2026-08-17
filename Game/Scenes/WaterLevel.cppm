@@ -94,7 +94,7 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     auto hdrShader = engine.shader().createShader(
         "hdr", ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = hdrFragmentShader});
 
-    engine.cubeMap().create("sky", front, back, left, right, top, bottom);
+    scene.environment = engine.cubeMap().create("sky", front, back, left, right, top, bottom);
 
     auto hdr = engine.postProcess().create("hdr", hdrShader.value());
 
