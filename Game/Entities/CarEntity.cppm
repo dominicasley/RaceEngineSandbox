@@ -13,7 +13,8 @@ namespace osr
 export class CarEntity
 {
 protected:
-    constexpr const static auto load = [](raceengine::Engine& engine) {
+    constexpr const static auto load = [](raceengine::Engine& engine)
+    {
         return engine.resource().loadModelAsync("assets/Models/MK2-GTI/MK2-GTI.glb").get();
     };
 
@@ -33,14 +34,8 @@ public:
         const auto drawableComponent = engine.entity().addComponent<Drawable>(
             entity,
             engine.scene().createEntity(
-                scene,
-                CreateRenderableModelDTO {
-                    .node = node,
-                    .shader = engine.shader().getShaderByName("pbr").value(),
-                    .model = model
-                }
-            )
-        );
+                scene, CreateRenderableModelDTO{
+                           .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
         engine.sceneManager().setPosition(node, 0.0f, 0.0f, 0.0f);
         engine.sceneManager().setScale(node, 0.1f, 0.1f, 0.1f);

@@ -31,9 +31,9 @@ public:
 namespace osr
 {
 
-FPSCameraController::FPSCameraController(raceengine::Engine& engine) : engine(engine)
+FPSCameraController::FPSCameraController(raceengine::Engine& engine) :
+    engine(engine)
 {
-
 }
 
 void FPSCameraController::update(Camera& camera)
@@ -45,7 +45,7 @@ void FPSCameraController::update(Camera& camera)
     auto rx = rotateX - static_cast<double>(0.001f) * (cmx - mx);
     auto ry = rotateY - static_cast<double>(0.001f) * (cmy - my);
 
-    auto[pmx, pmy] = engine.window().mousePosition();
+    auto [pmx, pmy] = engine.window().mousePosition();
     mx = pmx;
     my = pmy;
 
@@ -54,11 +54,8 @@ void FPSCameraController::update(Camera& camera)
     rotateX = rx;
     rotateY = ry;
 
-    auto right = glm::vec3(
-        sin(rotateX - static_cast<double>(3.14f / 2.0f)),
-        0,
-        cos(rotateX - static_cast<double>(3.14f / 2.0f))
-    );
+    auto right = glm::vec3(sin(rotateX - static_cast<double>(3.14f / 2.0f)), 0,
+                           cos(rotateX - static_cast<double>(3.14f / 2.0f)));
 
     const auto delta = engine.window().delta();
     if (delta <= 0.0f)

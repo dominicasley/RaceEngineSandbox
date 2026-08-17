@@ -2,7 +2,7 @@
 
 import osr.game;
 
-int main(int, char **argv)
+int main(int, char** argv)
 {
     std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 

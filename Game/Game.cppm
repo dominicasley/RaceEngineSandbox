@@ -29,7 +29,8 @@ module :private;
 namespace osr
 {
 
-Game::Game() : waterLevel(engine)
+Game::Game() :
+    waterLevel(engine)
 {
 }
 

@@ -13,13 +13,15 @@ namespace osr
 export class DinosaurEntity
 {
 protected:
-    constexpr const static auto load = [](raceengine::Engine& engine) {
+    constexpr const static auto load = [](raceengine::Engine& engine)
+    {
         return engine.resource().loadModelAsync("assets/Models/test.glb").get();
     };
 
 public:
-    DinosaurEntity(raceengine::Engine& engine, Scene& scene) : entity(engine.entity().createEntity()),
-                                                   node(engine.sceneManager().createNode(scene))
+    DinosaurEntity(raceengine::Engine& engine, Scene& scene) :
+        entity(engine.entity().createEntity()),
+        node(engine.sceneManager().createNode(scene))
     {
         auto loaded = load(engine);
         if (!loaded)
@@ -32,14 +34,8 @@ public:
         const auto drawableComponent = engine.entity().addComponent<Drawable>(
             entity,
             engine.scene().createEntity(
-                scene,
-                CreateRenderableModelDTO {
-                    .node = node,
-                    .shader = engine.shader().getShaderByName("pbr").value(),
-                    .model = model
-                }
-            )
-        );
+                scene, CreateRenderableModelDTO{
+                           .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
