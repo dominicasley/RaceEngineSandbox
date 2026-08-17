@@ -44,9 +44,9 @@ namespace osr
 
 WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
-    cameraController(engine),
     scene(engine.sceneManager().createScene()),
-    camera(engine.scene().createCamera(scene))
+    camera(engine.scene().createCamera(scene)),
+    cameraController(engine)
 {
     engine.camera().setPosition(camera, 0, 600, -450);
     engine.camera().setRoll(camera, 0, 1, 0);
@@ -102,14 +102,14 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
             .fragmentShaderSource = presentationFrag
         });
 
-    auto pbrShader = engine.shader().createShader(
+    engine.shader().createShader(
         "pbr",
         ShaderDescriptor{
             .vertexShaderSource = vert,
             .fragmentShaderSource = pbrFragmentShader
         });
 
-    auto colourShader = engine.shader().createShader(
+    engine.shader().createShader(
         "colour",
         ShaderDescriptor{
             .vertexShaderSource = vert,
@@ -130,7 +130,7 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
             .fragmentShaderSource = hdrFragmentShader
         });
 
-    auto environmentMap = engine.cubeMap().create("sky", front, back, left, right, top, bottom);
+    engine.cubeMap().create("sky", front, back, left, right, top, bottom);
 
     auto hdr = engine.postProcess().create("hdr", hdrShader.value());
 

@@ -2,7 +2,6 @@ module;
 
 #include <cmath>
 
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 
 export module osr.game:FPSCameraController;
@@ -43,8 +42,8 @@ void FPSCameraController::update(Camera& camera)
     auto [cmx, cmy] = engine.window().mousePosition();
     engine.window().setMousePosition(state.windowWidth / 2, state.windowHeight / 2);
 
-    auto rx = rotateX - 0.001f * (cmx - mx);
-    auto ry = rotateY - 0.001f * (cmy - my);
+    auto rx = rotateX - static_cast<double>(0.001f) * (cmx - mx);
+    auto ry = rotateY - static_cast<double>(0.001f) * (cmy - my);
 
     auto[pmx, pmy] = engine.window().mousePosition();
     mx = pmx;
@@ -56,9 +55,9 @@ void FPSCameraController::update(Camera& camera)
     rotateY = ry;
 
     auto right = glm::vec3(
-        sin(rotateX - 3.14f / 2.0f),
+        sin(rotateX - static_cast<double>(3.14f / 2.0f)),
         0,
-        cos(rotateX - 3.14f / 2.0f)
+        cos(rotateX - static_cast<double>(3.14f / 2.0f))
     );
 
     const auto delta = engine.window().delta();
@@ -70,22 +69,22 @@ void FPSCameraController::update(Camera& camera)
     velocity *= 1 / (1 + (delta * 15.0f));
     acceleration = glm::vec3(300.0f * delta);
 
-    if (engine.window().keyPressed(GLFW_KEY_D))
+    if (engine.window().keyPressed(Key::D))
     {
         velocity += right * acceleration;
     }
 
-    if (engine.window().keyPressed(GLFW_KEY_A))
+    if (engine.window().keyPressed(Key::A))
     {
         velocity -= right * acceleration;
     }
 
-    if (engine.window().keyPressed(GLFW_KEY_W))
+    if (engine.window().keyPressed(Key::W))
     {
         velocity += direction * acceleration;
     }
 
-    if (engine.window().keyPressed(GLFW_KEY_S))
+    if (engine.window().keyPressed(Key::S))
     {
         velocity -= direction * acceleration;
     }
