@@ -1,18 +1,24 @@
-#pragma once
+module;
 
 #include <stdexcept>
-#include <Engine.h>
-#include <Game/Components/Drawable.h>
+#include <utility>
 
-class CarEntity
+export module osr.game:Bollard;
+
+import raceengine;
+
+namespace osr
+{
+
+export class Bollard
 {
 protected:
-    constexpr const static auto load = [](Engine& engine) {
-        return engine.resource().loadModelAsync("assets/Models/MK2-GTI/MK2-GTI.glb").get();
+    constexpr const static auto load = [](raceengine::Engine& engine) {
+        return engine.resource().loadModelAsync("assets/Models/bollard.glb").get();
     };
 
 public:
-    CarEntity(Engine& engine, Scene& scene) :
+    Bollard(raceengine::Engine& engine, Scene& scene) :
         entity(engine.entity().createEntity()),
         node(engine.sceneManager().createNode(scene))
     {
@@ -36,8 +42,8 @@ public:
             )
         );
 
-        engine.sceneManager().setPosition(node, 0.0f, 0.0f, 0.0f);
-        engine.sceneManager().setScale(node, 0.1f, 0.1f, 0.1f);
+        engine.sceneManager().setPosition(node, 10.0f, 0.0f, 10.0f);
+        engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
 private:
@@ -45,4 +51,4 @@ private:
     SceneNode& node;
 };
 
-
+} // namespace osr

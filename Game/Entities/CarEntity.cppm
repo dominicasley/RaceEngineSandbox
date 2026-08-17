@@ -1,19 +1,26 @@
-#pragma once
+module;
 
 #include <stdexcept>
-#include <Engine.h>
-#include <Game/Components/Drawable.h>
+#include <utility>
 
-class DinosaurEntity
+export module osr.game:CarEntity;
+
+import raceengine;
+
+namespace osr
+{
+
+export class CarEntity
 {
 protected:
-    constexpr const static auto load = [](Engine& engine) {
-        return engine.resource().loadModelAsync("assets/Models/test.glb").get();
+    constexpr const static auto load = [](raceengine::Engine& engine) {
+        return engine.resource().loadModelAsync("assets/Models/MK2-GTI/MK2-GTI.glb").get();
     };
 
 public:
-    DinosaurEntity(Engine& engine, Scene& scene) : entity(engine.entity().createEntity()),
-                                                   node(engine.sceneManager().createNode(scene))
+    CarEntity(raceengine::Engine& engine, Scene& scene) :
+        entity(engine.entity().createEntity()),
+        node(engine.sceneManager().createNode(scene))
     {
         auto loaded = load(engine);
         if (!loaded)
@@ -35,7 +42,8 @@ public:
             )
         );
 
-        engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
+        engine.sceneManager().setPosition(node, 0.0f, 0.0f, 0.0f);
+        engine.sceneManager().setScale(node, 0.1f, 0.1f, 0.1f);
     }
 
 private:
@@ -43,4 +51,4 @@ private:
     SceneNode& node;
 };
 
-
+} // namespace osr

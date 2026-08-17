@@ -1,8 +1,38 @@
+module;
 
-#include "FPSCameraController.h"
+#include <cmath>
 
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 
-FPSCameraController::FPSCameraController(Engine& engine) : engine(engine)
+export module osr.game:FPSCameraController;
+
+import raceengine;
+
+namespace osr
+{
+
+export class FPSCameraController
+{
+    raceengine::Engine& engine;
+    double mx = 0;
+    double my = 0;
+    double rotateX = 0;
+    double rotateY = 0;
+    glm::vec3 velocity = glm::vec3(0.0f);
+    glm::vec3 acceleration = glm::vec3(0.0f);
+
+public:
+    explicit FPSCameraController(raceengine::Engine& engine);
+    void update(Camera& camera);
+};
+
+} // namespace osr
+
+namespace osr
+{
+
+FPSCameraController::FPSCameraController(raceengine::Engine& engine) : engine(engine)
 {
 
 }
@@ -62,3 +92,5 @@ void FPSCameraController::update(Camera& camera)
 
     engine.camera().translate(camera, velocity.x, velocity.y, velocity.z);
 }
+
+} // namespace osr

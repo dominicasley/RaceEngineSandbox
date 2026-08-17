@@ -1,20 +1,25 @@
-#pragma once
+module;
 
 #include <stdexcept>
-#include <Engine.h>
-#include <Game/Components/Drawable.h>
+#include <utility>
 
-class Bollard
+export module osr.game:DinosaurEntity;
+
+import raceengine;
+
+namespace osr
+{
+
+export class DinosaurEntity
 {
 protected:
-    constexpr const static auto load = [](Engine& engine) {
-        return engine.resource().loadModelAsync("assets/Models/bollard.glb").get();
+    constexpr const static auto load = [](raceengine::Engine& engine) {
+        return engine.resource().loadModelAsync("assets/Models/test.glb").get();
     };
 
 public:
-    Bollard(Engine& engine, Scene& scene) :
-        entity(engine.entity().createEntity()),
-        node(engine.sceneManager().createNode(scene))
+    DinosaurEntity(raceengine::Engine& engine, Scene& scene) : entity(engine.entity().createEntity()),
+                                                   node(engine.sceneManager().createNode(scene))
     {
         auto loaded = load(engine);
         if (!loaded)
@@ -36,7 +41,6 @@ public:
             )
         );
 
-        engine.sceneManager().setPosition(node, 10.0f, 0.0f, 10.0f);
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
@@ -45,4 +49,4 @@ private:
     SceneNode& node;
 };
 
-
+} // namespace osr

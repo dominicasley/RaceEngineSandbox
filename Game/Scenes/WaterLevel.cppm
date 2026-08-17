@@ -1,8 +1,48 @@
-#include "WaterLevel.h"
+module;
 
 #include <stdexcept>
+#include <utility>
 
-WaterLevel::WaterLevel(Engine& engine) :
+#include <glm/glm.hpp>
+
+export module osr.game:WaterLevel;
+
+import :Bollard;
+import :CarEntity;
+import :DinosaurEntity;
+import :FPSCameraController;
+
+import raceengine;
+
+namespace osr
+{
+
+export class WaterLevel
+{
+private:
+    raceengine::Engine& engine;
+    Scene& scene;
+    Camera& camera;
+    FPSCameraController cameraController;
+
+    RenderableModel* sky;
+
+    glm::vec3 velocity = glm::vec3(0.0f);
+    glm::vec3 cpuVelocity = glm::vec3(0.0f);
+    glm::vec3 acceleration = glm::vec3(0.0f);
+    glm::vec3 ballVelocity = glm::vec3(0.0f, 0.0, 300.0f);
+
+public:
+    explicit WaterLevel(raceengine::Engine& engine);
+    void step();
+};
+
+} // namespace osr
+
+namespace osr
+{
+
+WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
     cameraController(engine),
     scene(engine.sceneManager().createScene()),
@@ -136,3 +176,5 @@ void WaterLevel::step()
     cameraController.update(camera);
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }
+
+} // namespace osr
