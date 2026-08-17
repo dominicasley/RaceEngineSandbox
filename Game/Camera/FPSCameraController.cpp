@@ -31,8 +31,14 @@ void FPSCameraController::update(Camera& camera)
         cos(rotateX - 3.14f / 2.0f)
     );
 
-    velocity *= 1 / (1 + (engine.window().delta() * 15.0f));
-    acceleration = glm::vec3(0.005f / engine.window().delta());
+    const auto delta = engine.window().delta();
+    if (delta <= 0.0f)
+    {
+        return;
+    }
+
+    velocity *= 1 / (1 + (delta * 15.0f));
+    acceleration = glm::vec3(300.0f * delta);
 
     if (engine.window().keyPressed(GLFW_KEY_D))
     {
