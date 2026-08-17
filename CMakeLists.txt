@@ -5,8 +5,10 @@ cmake_minimum_required (VERSION 3.8)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-link_directories(../Engine/vendor/FreeImage/bin)
-link_libraries(FreeImage)
+if(WIN32)
+    link_directories(../Engine/vendor/FreeImage/bin)
+    link_libraries(FreeImage)
+endif()
 
 add_definitions(-D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS)
 
@@ -21,8 +23,6 @@ add_executable (
         Game/Scenes/WaterLevel.h
         Game/Camera/FPSCameraController.cpp
         Game/Camera/FPSCameraController.h
-        Game/DotNetHost.cpp
-        Game/DotNetHost.h
         Game/Entities/DinosaurEntity.cpp
         Game/Entities/DinosaurEntity.h
         Game/Entities/CarEntity.h
@@ -38,7 +38,10 @@ target_link_libraries(OpenStreetRace tweeny)
 target_link_libraries(OpenStreetRace Engine)
 target_link_libraries(OpenStreetRace spdlog)
 target_include_directories(OpenStreetRace PUBLIC ../Engine)
-include_directories(OpenStreetRace PUBLIC C:/Users/Dominic/Documents/dev/dotnet/runtime/src)
+if(WIN32)
+    target_sources(OpenStreetRace PRIVATE Game/DotNetHost.cpp Game/DotNetHost.h)
+    include_directories(OpenStreetRace PUBLIC C:/Users/Dominic/Documents/dev/dotnet/runtime/src)
+endif()
 
 set (source "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 set (destination "${CMAKE_CURRENT_BINARY_DIR}/bin/assets")
