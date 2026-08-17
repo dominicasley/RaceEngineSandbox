@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdexcept>
 #include <Engine.h>
 #include <Game/Components/Drawable.h>
 
@@ -7,16 +8,20 @@ class DinosaurEntity
 {
 protected:
     constexpr const static auto load = [](Engine& engine) {
-        return ForkJoin::join(
-            engine.resource().loadModelAsync("assets/Models/test.glb")
-        );
+        return engine.resource().loadModelAsync("assets/Models/test.glb").get();
     };
 
 public:
     DinosaurEntity(Engine& engine, Scene& scene) : entity(engine.entity().createEntity()),
                                                    node(engine.sceneManager().createNode(scene))
     {
-        const auto [model] = load(engine);
+        auto loaded = load(engine);
+        if (!loaded)
+        {
+            throw std::runtime_error(loaded.error());
+        }
+
+        const auto model = std::move(loaded).value();
 
         const auto drawableComponent = engine.entity().addComponent<Drawable>(
             entity,

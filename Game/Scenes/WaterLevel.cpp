@@ -1,5 +1,7 @@
 #include "WaterLevel.h"
 
+#include <stdexcept>
+
 WaterLevel::WaterLevel(Engine& engine) :
     engine(engine),
     cameraController(engine),
@@ -10,25 +12,7 @@ WaterLevel::WaterLevel(Engine& engine) :
     engine.camera().setRoll(camera, 0, 1, 0);
     engine.camera().lookAtPoint(camera, 0, 0, 0);
 
-    const auto [
-        presentationVert,
-        presentationFrag,
-        vert,
-        pbrFragmentShader,
-        colourFragmentShader,
-        hdrVertexShader,
-        hdrFragmentShader,
-        water,
-        skyboxModel,
-        skyboxVertexShader,
-        skyboxFragmentShader,
-        front,
-        back,
-        left,
-        right,
-        top,
-        bottom
-    ] = ForkJoin::join(
+    auto loaded = awaitAll(
         engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
         engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
         engine.resource().loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
@@ -47,6 +31,31 @@ WaterLevel::WaterLevel(Engine& engine) :
         engine.resource().loadTextureAsync("assets/Textures/Skies/Field/py.hdr"),
         engine.resource().loadTextureAsync("assets/Textures/Skies/Field/ny.hdr")
     );
+
+    if (!loaded)
+    {
+        throw std::runtime_error(loaded.error());
+    }
+
+    auto [
+        presentationVert,
+        presentationFrag,
+        vert,
+        pbrFragmentShader,
+        colourFragmentShader,
+        hdrVertexShader,
+        hdrFragmentShader,
+        water,
+        skyboxModel,
+        skyboxVertexShader,
+        skyboxFragmentShader,
+        front,
+        back,
+        left,
+        right,
+        top,
+        bottom
+    ] = std::move(loaded).value();
 
     auto presentationShader = engine.shader().createShader(
         "present",
