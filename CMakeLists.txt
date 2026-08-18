@@ -18,6 +18,7 @@ target_sources(OpenStreetRace PRIVATE
         Game/Entities/Bollard.cppm
         Game/Entities/CarEntity.cppm
         Game/Entities/DinosaurEntity.cppm
+        Game/Entities/GroundPlane.cppm
         Game/Game.cppm
         Game/Scenes/WaterLevel.cppm)
 

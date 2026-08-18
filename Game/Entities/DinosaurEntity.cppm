@@ -65,10 +65,6 @@ public:
                            .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
-
-        // 20 deg/s: a turn every 18 seconds. This is the only entity the spawn view frames,
-        // so it is the one that makes the update phase visible in a capture.
-        engine.entity().addComponent<Spin>(entity, engine.sceneManager(), node, 20.0f);
     }
 
 private:

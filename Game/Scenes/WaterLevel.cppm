@@ -12,6 +12,7 @@ export module osr.game:WaterLevel;
 import :Bollard;
 import :CarEntity;
 import :DinosaurEntity;
+import :GroundPlane;
 import :FPSCameraController;
 
 import raceengine;
@@ -68,11 +69,18 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     camera(orThrow(engine.scene().createCamera(scene))),
     cameraController(engine)
 {
-    engine.scene().createLight(scene) = raceengine::Light{.position = glm::vec3(0.0f, 350.0f, 350.0f),
-                                                          .diffuse = glm::vec3(1.2859 * 2.5, 1.2973 * 2.5, 1.3 * 2.5),
-                                                          .specular = glm::vec3(1.2859, 1.2973, 1.3),
-                                                          .ambient = glm::vec3(0.29859, 0.29973, 0.3),
-                                                          .attenuation = 1.0f};
+    // Directional, and its direction is the exact opposite of the position the shading reads as
+    // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
+    // from `position`, so anything else would put the shadow where the light is not.
+    const auto sunPosition = glm::vec3(0.0f, 350.0f, 350.0f);
+    auto& sun = engine.scene().createLight(scene);
+    sun = raceengine::Light{.type = raceengine::LightType::Directional,
+                            .position = sunPosition,
+                            .direction = -glm::normalize(sunPosition),
+                            .diffuse = glm::vec3(1.2859 * 2.5, 1.2973 * 2.5, 1.3 * 2.5),
+                            .specular = glm::vec3(1.2859, 1.2973, 1.3),
+                            .ambient = glm::vec3(0.29859, 0.29973, 0.3),
+                            .attenuation = 1.0f};
 
     engine.camera().setPosition(camera, 0, 600, -450);
     engine.camera().setRoll(camera, 0, 1, 0);
@@ -83,6 +91,8 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                  engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/PbrFragmentShader.glsl"),
+                 engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
+                 engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/HdrVertexShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/HdrFragmentShader.glsl"),
@@ -99,6 +109,8 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PresentToScreenFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PassThroughVertexShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PbrFragmentShader.glsl"),
+                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/DepthOnlyVertexShader.glsl"),
+                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/DepthOnlyFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/ColourFragmentShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/HdrVertexShader.glsl"),
                  engine.resource().loadTextFileAsync("assets/Shaders/vulkan/HdrFragmentShader.glsl"),
@@ -110,9 +122,10 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
         throw std::runtime_error(loaded.error());
     }
 
-    auto [presentationVert, presentationFrag, vert, pbrFragmentShader, colourFragmentShader, hdrVertexShader,
-          hdrFragmentShader, skyboxModel, skyboxVertexShader, skyboxFragmentShader, front, back, left, right, top,
-          bottom, vulkanPresentationVert, vulkanPresentationFrag, vulkanVert, vulkanPbrFragmentShader,
+    auto [presentationVert, presentationFrag, vert, pbrFragmentShader, depthVertexShader, depthFragmentShader,
+          colourFragmentShader, hdrVertexShader, hdrFragmentShader, skyboxModel, skyboxVertexShader,
+          skyboxFragmentShader, front, back, left, right, top, bottom, vulkanPresentationVert, vulkanPresentationFrag,
+          vulkanVert, vulkanPbrFragmentShader, vulkanDepthVertexShader, vulkanDepthFragmentShader,
           vulkanColourFragmentShader, vulkanHdrVertexShader, vulkanHdrFragmentShader, vulkanSkyboxVertexShader,
           vulkanSkyboxFragmentShader] = std::move(loaded).value();
 
@@ -127,6 +140,14 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                                                              .fragmentShaderSource = pbrFragmentShader,
                                                              .vulkanVertexShaderSource = vulkanVert,
                                                              .vulkanFragmentShaderSource = vulkanPbrFragmentShader}));
+
+    // The cascades' depth pass. Position through the light's matrix, nothing written: the target
+    // has no colour attachment for a fragment output to reach.
+    auto depthShader = orThrow(engine.shader().createShader(
+        "depth", ShaderDescriptor{.vertexShaderSource = depthVertexShader,
+                                  .fragmentShaderSource = depthFragmentShader,
+                                  .vulkanVertexShaderSource = vulkanDepthVertexShader,
+                                  .vulkanFragmentShaderSource = vulkanDepthFragmentShader}));
 
     orThrow(engine.shader().createShader("colour",
                                          ShaderDescriptor{.vertexShaderSource = vert,
@@ -164,14 +185,30 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     engine.presenter().setPresenter(Presenter{.output = outputAttachment.front(), .shader = presentationShader});
 
+    // Four depth-only orthographic cameras appended to this scene, refitted to the camera's
+    // frustum every frame. 2048 square: at this camera's field of view the nearest cascade is then
+    // well under a world unit per texel, which is what makes a contact shadow read as an edge
+    // rather than a staircase. The distance is where the world stops being worth shadowing, and
+    // the caster extent is roughly how tall the building is, measured along the light.
+    orThrow(engine.shadow().enable(scene, sun, camera,
+                                   raceengine::CreateShadowCascadesDTO{.depthShader = depthShader,
+                                                                       .resolution = 2048,
+                                                                       .lambda = 0.5f,
+                                                                       .distance = 2000.0f,
+                                                                       .casterExtent = 1500.0f}));
+
     auto& skyEntity = engine.scene().createEntity(
         scene, CreateRenderableModelDTO{
                    .node = engine.sceneManager().createNode(scene), .shader = skyboxShader, .model = skyboxModel});
 
     engine.sceneManager().setScale(skyEntity.node, 2500.0f, 2500.0f, 2500.0f);
+    // The sky is not a caster. A 2500-unit box in the depth map fills every cascade at its near
+    // plane, and the whole world is then in its shadow.
+    skyEntity.castsShadow = false;
 
     this->sky = &skyEntity;
 
+    GroundPlane(engine, scene);
     DinosaurEntity(engine, scene);
     CarEntity(engine, scene);
     Bollard(engine, scene);
