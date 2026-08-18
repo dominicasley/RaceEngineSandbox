@@ -37,7 +37,9 @@ public:
                 scene, CreateRenderableModelDTO{
                            .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
-        engine.sceneManager().setPosition(node, 0.0f, 0.0f, 0.0f);
+        // Clear in front of the building, whose near face is at z = -72 once scaled: the car is
+        // 40 long about its origin, so anything nearer than about -95 still overlaps it.
+        engine.sceneManager().setPosition(node, -60.0f, 0.0f, -130.0f);
         engine.sceneManager().setScale(node, 0.1f, 0.1f, 0.1f);
     }
 

@@ -37,7 +37,8 @@ public:
                 scene, CreateRenderableModelDTO{
                            .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
-        engine.sceneManager().setPosition(node, 10.0f, 0.0f, 10.0f);
+        // Also in front of the building, on the other side of the car.
+        engine.sceneManager().setPosition(node, 40.0f, 0.0f, -110.0f);
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
