@@ -19,7 +19,10 @@ private:
 
 public:
     explicit Game();
-    void run();
+    // The process's exit status. The engine can end the run itself — the frame capture does —
+    // and what it has to say about how that went reaches the operating system through here
+    // rather than through a call to std::exit somewhere below.
+    [[nodiscard]] int run();
 };
 
 } // namespace osr
@@ -37,12 +40,14 @@ Game::Game() :
 // The level registered its update with the engine when it was built, so the loop no longer
 // carries an ordering contract of its own: the engine runs game logic on its fixed tick, at a
 // point of its choosing, and a frame renders the state the tick before it produced.
-void Game::run()
+int Game::run()
 {
     while (engine.running())
     {
         engine.step();
     }
+
+    return engine.status();
 }
 
 } // namespace osr
