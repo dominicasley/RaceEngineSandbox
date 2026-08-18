@@ -1,10 +1,9 @@
 #version 450
 // Vulkan variant of SkyboxVertexShader.glsl.
 
+// Position only: the renderer feeds exactly the locations this shader declares, so
+// declaring the unread attributes would cost a vertex binding per primitive for nothing.
 layout(location = 0) in vec3 vertexPositionModelSpace;
-layout(location = 1) in vec2 vertexTextureCoordinates;
-layout(location = 2) in vec3 vertexNormalModelSpace;
-layout(location = 3) in vec4 vertexTangentModelSpace;
 
 layout(set = 0, binding = 0) uniform FrameData {
     mat4 viewMatrix;

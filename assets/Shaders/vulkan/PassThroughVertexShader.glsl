@@ -37,7 +37,8 @@ layout(location = 5) out vec3 bitangentInNormalSpace;
 layout(location = 6) out vec3 normalsInWorldSpace;
 layout(location = 7) out vec3 viewDirectionWorldSpace;
 layout(location = 8) out vec3 lightDirectionWorldSpace;
-layout(location = 9) out mat3 tangentBinormalNormalMatrix;
+// tangentBinormalNormalMatrix stays local: no fragment stage reads it, and an output no
+// fragment shader consumes is a stage-interface mismatch once SPIR-V is optimized.
 
 void main()
 {
@@ -65,7 +66,7 @@ void main()
     tangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * vec3(vertexTangentModelSpace));
     bitangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * bitangent);
 
-    tangentBinormalNormalMatrix = mat3(
+    mat3 tangentBinormalNormalMatrix = mat3(
         tangentInNormalSpace.x, bitangentInNormalSpace.x, normalsInNormalSpace.x,
         tangentInNormalSpace.y, bitangentInNormalSpace.y, normalsInNormalSpace.y,
         tangentInNormalSpace.z, bitangentInNormalSpace.z, normalsInNormalSpace.z

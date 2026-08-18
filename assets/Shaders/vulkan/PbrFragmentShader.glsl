@@ -11,7 +11,6 @@ layout(location = 5) in vec3 bitangentInNormalSpace;
 layout(location = 6) in vec3 normalsInWorldSpace;
 layout(location = 7) in vec3 viewDirectionWorldSpace;
 layout(location = 8) in vec3 lightDirectionWorldSpace;
-layout(location = 9) in mat3 tangentBinormalNormalMatrix;
 
 // Set 0: per camera pass. Set 1: per material. Set 2: per draw (dynamic offset).
 layout(set = 0, binding = 0) uniform FrameData {
@@ -92,8 +91,6 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
     vec3 specular = mix(vec3(0.04), albedo.rgb, metallic);
 
-    vec3 nm = tangentBinormalNormalMatrix * normalMap;
-    mat3x3 tnrm = mat3(1.0); // GL fed normalMatrix here; value provably unused downstream
     vec3 incident_eye = normalize(vec3(positionInWorldSpace) - frame.cameraPosition.xyz);
     vec3 reflection_vector = -reflect(incident_eye, normalize(normalsInWorldSpace));
     vec3 envdiff = texture(environmentMap, reflection_vector, 10).xyz;

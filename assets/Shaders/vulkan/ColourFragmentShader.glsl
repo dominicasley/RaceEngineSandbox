@@ -3,16 +3,9 @@
 
 layout(location = 0) out vec4 fragColor;
 
-layout(location = 0) in vec2 textureCoordinates;
-layout(location = 1) in vec3 positionInWorldSpace;
-layout(location = 2) in vec3 positionInViewSpace;
-layout(location = 3) in vec3 normalsInNormalSpace;
-layout(location = 4) in vec3 tangentInNormalSpace;
-layout(location = 5) in vec3 bitangentInNormalSpace;
-layout(location = 6) in vec3 normalsInWorldSpace;
-layout(location = 7) in vec3 viewDirectionWorldSpace;
-layout(location = 8) in vec3 lightDirectionWorldSpace;
-layout(location = 9) in mat3 tangentBinormalNormalMatrix;
+// No stage inputs: this shader consumes only the material UBO. Declaring the
+// PassThroughVertexShader interpolants it never reads would leave them in the SPIR-V
+// only until optimization stripped them, so they are absent from the source instead.
 
 layout(set = 1, binding = 0) uniform MaterialData {
     vec4 baseColour;
