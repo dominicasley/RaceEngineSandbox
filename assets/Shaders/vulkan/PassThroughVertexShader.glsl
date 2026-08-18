@@ -19,11 +19,19 @@ struct Light {
     vec4 ambientAttenuation;   // xyz ambient, w attenuation
 };
 
+// Declared whole even though this stage reads only the first three members: it is one block with
+// one std140 layout, and a stage that declared a prefix of it would be a second statement of the
+// ABI to keep in step. The shadow tail is documented where it is read (PbrFragmentShader).
 layout(set = SET_FRAME, binding = 0) uniform FrameData {
     mat4 viewMatrix;
     vec4 cameraPosition;
     ivec4 lightCount;          // x = lights in use, never above MAX_LIGHTS
     Light lights[MAX_LIGHTS];
+    mat4 shadowMatrices[SHADOW_CASCADES];
+    vec4 shadowSplits;
+    vec4 shadowTexelWorldSize;
+    vec4 shadowDepthScale;
+    ivec4 shadowParams;
 } frame;
 
 layout(set = SET_DRAW, binding = 0) uniform DrawData {

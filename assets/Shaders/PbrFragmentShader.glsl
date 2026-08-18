@@ -45,7 +45,138 @@ layout(binding = TEXTURE_EMISSIVE) uniform sampler2D emissiveTexture;
 layout(binding = TEXTURE_OCCLUSION) uniform sampler2D occlusionTexture;
 layout(binding = TEXTURE_ENVIRONMENT) uniform samplerCube environmentMap;
 
+// The cascaded shadow map. shadowMatrices take world space straight to a shadow-map lookup — the
+// backend's depth convention and its texture origin are folded in by shadowLookupCorrection — so
+// nothing below holds a convention of its own and the Vulkan dialect is the same arithmetic.
+// shadowCascadeCount is 0 when this view has no cascades bound, which is the only case in which
+// the samplers below must not be read.
+uniform mat4 shadowMatrices[SHADOW_CASCADES];
+uniform vec4 shadowSplits;          // where each cascade ends, along the view axis
+uniform vec4 shadowTexelWorldSize;  // world units one texel of each cascade covers
+uniform vec4 shadowDepthScale;      // normalised depth per world unit along the light, per cascade
+uniform int shadowCascadeCount;
+uniform int shadowLightIndex;
+layout(binding = SHADOW_MAP_BINDING) uniform sampler2DShadow shadowMaps[SHADOW_CASCADES];
+
 const float M_PI = 3.141592653;
+
+// One cascade's percentage-closer average.
+float shadowInCascade(int cascade, vec3 coordinate)
+{
+    float result = 1.0;
+
+    // An array of samplers may only be indexed by a dynamically uniform expression, and a cascade
+    // chosen from a fragment's own view depth is not one — fragments of a single triangle straddle
+    // a split. The loop counter is dynamically uniform because its bounds are compile-time
+    // constants, so this unrolls into a chain of constant-index branches: the form that is defined
+    // on desktop GL without ARB_gpu_shader5 and on Vulkan without
+    // shaderSampledImageArrayNonUniformIndexing, neither of which this engine asks for.
+    for (int index = 0; index < SHADOW_CASCADES; index++)
+    {
+        if (index != cascade)
+        {
+            continue;
+        }
+
+        // Each tap is already a 2x2 percentage-closer average, because the comparison sampler
+        // filters linearly; a (2r+1)^2 grid one texel apart therefore covers a (2r+2)^2
+        // neighbourhood with tent weighting.
+        float texel = 1.0 / float(textureSize(shadowMaps[index], 0).x);
+        float total = 0.0;
+
+        for (int y = -SHADOW_PCF_RADIUS; y <= SHADOW_PCF_RADIUS; y++)
+        {
+            for (int x = -SHADOW_PCF_RADIUS; x <= SHADOW_PCF_RADIUS; x++)
+            {
+                total += texture(shadowMaps[index], vec3(coordinate.xy + vec2(x, y) * texel, coordinate.z));
+            }
+        }
+
+        result = total / float((2 * SHADOW_PCF_RADIUS + 1) * (2 * SHADOW_PCF_RADIUS + 1));
+    }
+
+    return result;
+}
+
+// How much of the shadow-casting light reaches this fragment, according to one cascade.
+float shadowSample(int cascade, vec3 worldPosition, vec3 worldNormal, float NdL)
+{
+    float texelWorld = shadowTexelWorldSize[cascade];
+    float sinTheta = sqrt(max(0.0, 1.0 - NdL * NdL));
+    float tanTheta = min(sinTheta / max(NdL, 1.0 / float(SHADOW_MAX_SLOPE)), float(SHADOW_MAX_SLOPE));
+
+    // Normal offset first. Moving the sample point off the surface sideways is what clears acne on
+    // a slope without detaching the contact shadow, which a depth bias large enough to do the same
+    // job alone would.
+    vec4 lightSpace = shadowMatrices[cascade]
+        * vec4(worldPosition + worldNormal * (texelWorld * float(SHADOW_NORMAL_OFFSET_TEXELS) * sinTheta), 1.0);
+    vec3 coordinate = lightSpace.xyz / lightSpace.w;
+
+    // Past the cascade's far plane nothing was stored to compare against, and the comparison would
+    // read "occluded" for every fragment behind the map. Outside it laterally needs no test: the
+    // sampler clamps to an opaque white border, which compares as lit.
+    if (coordinate.z >= 1.0)
+    {
+        return 1.0;
+    }
+
+    // What the offset does not cover: the depth a surface at this slope crosses over the texels the
+    // filter spans, expressed in the cascade's own normalised depth.
+    coordinate.z -= texelWorld * (float(SHADOW_CONSTANT_BIAS_TEXELS) + float(SHADOW_SLOPE_BIAS_TEXELS) * tanTheta)
+        * shadowDepthScale[cascade];
+
+    return shadowInCascade(cascade, coordinate);
+}
+
+float shadowFactor(vec3 worldPosition, vec3 worldNormal, vec3 lightDirection, float viewDepth)
+{
+    if (shadowCascadeCount <= 0)
+    {
+        return 1.0;
+    }
+
+    float NdL = dot(worldNormal, lightDirection);
+    if (NdL <= 0.0)
+    {
+        // Facing away from the light. The diffuse term is already zero here, and testing would
+        // sample the far side of this very surface and shadow it a second time.
+        return 1.0;
+    }
+
+    float lastSplit = shadowSplits[shadowCascadeCount - 1];
+    if (viewDepth >= lastSplit)
+    {
+        return 1.0;
+    }
+
+    int cascade = shadowCascadeCount - 1;
+    for (int index = 0; index < SHADOW_CASCADES; index++)
+    {
+        if (index < shadowCascadeCount && viewDepth < shadowSplits[index])
+        {
+            cascade = index;
+            break;
+        }
+    }
+
+    float shadow = shadowSample(cascade, worldPosition, worldNormal, NdL);
+
+    // The seam. Filter width and bias both change at a split, which reads as a line ruled across
+    // the ground; the last SHADOW_BLEND_PERCENT of a cascade cross-fades into the next.
+    float split = shadowSplits[cascade];
+    float blendStart = split * (1.0 - float(SHADOW_BLEND_PERCENT) / 100.0);
+    if (cascade + 1 < shadowCascadeCount && viewDepth > blendStart)
+    {
+        float blend = clamp((viewDepth - blendStart) / max(split - blendStart, 0.0001), 0.0, 1.0);
+        shadow = mix(shadow, shadowSample(cascade + 1, worldPosition, worldNormal, NdL), blend);
+    }
+
+    // And the far end, for the same reason: past the last cascade every fragment is lit, so the
+    // last SHADOW_FADE_PERCENT of the shadow distance fades to lit rather than stopping dead.
+    float fadeStart = lastSplit * (1.0 - float(SHADOW_FADE_PERCENT) / 100.0);
+
+    return mix(shadow, 1.0, clamp((viewDepth - fadeStart) / max(lastSplit - fadeStart, 0.0001), 0.0, 1.0));
+}
 
 float phong_diffuse()
 {
@@ -114,6 +245,14 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // floor so a single light reproduces the term exactly.
     vec3 ambient_light = vec3(0);
 
+    // Once, outside the loop: one light casts the cascades, and the test is the same wherever in
+    // the loop that light turns up. The geometric world normal, not the normal-mapped one — the
+    // bias is a property of the surface the depth map recorded, not of its texture. Lights carry
+    // the direction *towards* the light in `position`, which is what the loop below reads too.
+    int shadowLight = clamp(shadowLightIndex, 0, MAX_LIGHTS - 1);
+    float shadow = shadowFactor(positionInWorldSpace, normalize(normalsInWorldSpace),
+                                normalize(lights[shadowLight].position), -positionInViewSpace.z);
+
     for (int lightIndex = 0; lightIndex < lightCount; lightIndex++)
     {
         vec3 L = normalize(lightDirectionWorldSpace[lightIndex]);
@@ -130,7 +269,11 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
         vec3 diffref = (vec3(1.0) - specfresnel) * phong_diffuse() * NdL;
 
-        vec3 light_color = lights[lightIndex].diffuse * lights[lightIndex].attenuation;
+        // Direct light only. Ambient is a floor rather than a contribution and the image-based
+        // terms below come from every direction, so neither is something a shadow map can occlude.
+        float occlusion_from_shadow = (lightIndex == shadowLight) ? shadow : 1.0;
+
+        vec3 light_color = lights[lightIndex].diffuse * lights[lightIndex].attenuation * occlusion_from_shadow;
         reflected_light += specref * light_color;
         diffuse_light += diffref * light_color;
         ambient_light += lights[lightIndex].ambient;
