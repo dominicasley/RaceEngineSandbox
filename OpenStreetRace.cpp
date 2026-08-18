@@ -1,11 +1,12 @@
-﻿#include <filesystem>
-#include "Game/Game.h"
+#include <filesystem>
 
-int main(int argc, char **argv)
+import osr.game;
+
+int main(int, char** argv)
 {
     std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 
-    Game game;
+    osr::Game game;
     game.run();
 
     return 0;
