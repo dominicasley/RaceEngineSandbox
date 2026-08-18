@@ -1,5 +1,6 @@
 module;
 
+#include <algorithm>
 #include <cmath>
 
 #include <glm/glm.hpp>
@@ -13,10 +14,12 @@ namespace osr
 
 export class FPSCameraController
 {
+    static constexpr double mouseSensitivity = 0.001;
+    // Just under a right angle: at exactly +/-pi/2 the direction vector is parallel to the
+    // world up axis and the view matrix has no defined roll.
+    static constexpr double pitchLimit = 1.5533430342749532;
+
     raceengine::Engine& engine;
-    bool firstUpdate = true;
-    double mx = 0;
-    double my = 0;
     double rotateX = 0;
     double rotateY = -0.75;
     glm::vec3 velocity = glm::vec3(0.0f);
@@ -37,29 +40,22 @@ namespace osr
 FPSCameraController::FPSCameraController(raceengine::Engine& engine) :
     engine(engine)
 {
+    // Mouse-look needs motion the desktop cannot clamp at a screen edge.
+    engine.window().setCursorMode(raceengine::CursorMode::Captured);
 }
 
 void FPSCameraController::update(Camera& camera, float delta)
 {
-    auto state = engine.window().state();
-    auto [cmx, cmy] = engine.window().mousePosition();
-    engine.window().setMousePosition(state.windowWidth / 2, state.windowHeight / 2);
+    // The window reports motion, not position: it owns the captured cursor, so there is no
+    // warp to centre here and no read-back to misinterpret.
+    const auto [deltaX, deltaY] = engine.window().mouseDelta();
 
-    // The first update has no previous cursor sample; without this guard the cursor's absolute
-    // position becomes a huge one-off rotation (0.001 rad/px from an arbitrary origin).
-    if (firstUpdate)
-    {
-        firstUpdate = false;
-        mx = cmx;
-        my = cmy;
-    }
+    auto rx = rotateX - mouseSensitivity * deltaX;
+    auto ry = rotateY - mouseSensitivity * deltaY;
 
-    auto rx = rotateX - static_cast<double>(0.001f) * (cmx - mx);
-    auto ry = rotateY - static_cast<double>(0.001f) * (cmy - my);
-
-    auto [pmx, pmy] = engine.window().mousePosition();
-    mx = pmx;
-    my = pmy;
+    // Looking straight up or down would make the direction vector degenerate against the
+    // world up axis and the view matrix flip.
+    ry = std::clamp(ry, -pitchLimit, pitchLimit);
 
     auto direction = glm::vec3(cos(ry) * sin(rx), sin(ry), cos(ry) * cos(rx));
     engine.camera().setDirection(camera, direction.x, direction.y, direction.z);
