@@ -1,4 +1,6 @@
 #version 420 core
+// MAX_LIGHTS and every TEXTURE_* binding are defined by the renderer from
+// Graphics/Api/RenderContract.cppm; this file must not spell one of those numbers.
 
 layout(location = 0) out vec4 fragColor;
 
@@ -6,12 +8,11 @@ in vec3 positionInViewSpace;
 in vec3 positionInWorldSpace;
 in vec2 textureCoordinates;
 in vec3 viewDirectionWorldSpace;
-in vec3 lightDirectionWorldSpace;
+in vec3 lightDirectionWorldSpace[MAX_LIGHTS];
 in vec3 normalsInNormalSpace;
 in vec3 tangentInNormalSpace;
 in vec3 bitangentInNormalSpace;
 in vec3 normalsInWorldSpace;
-in mat3 tangentBinormalNormalMatrix;
 
 struct light {
     vec3 position;
@@ -21,11 +22,11 @@ struct light {
     float attenuation;
 };
 
-uniform light lights;
+uniform light lights[MAX_LIGHTS];
+uniform int lightCount;
 uniform vec3 cameraPosition;
-uniform vec2 textureRepeat;
+uniform mat3 textureTransform;
 uniform mat3 modelView3x3Matrix;
-uniform mat3 normalMatrix;
 uniform mat4 localToWorld4x4Matrix;
 uniform float u_roughness;
 uniform float u_metalness;
@@ -37,12 +38,12 @@ uniform bool u_useSpecularTexture;
 uniform bool u_useEmissiveTexture;
 uniform bool u_useOcclusionTexture;
 
-layout(binding = 0) uniform sampler2D diffuseTexture;
-layout(binding = 1) uniform sampler2D normalTexture;
-layout(binding = 2) uniform sampler2D specularTexture;
-layout(binding = 3) uniform sampler2D emissiveTexture;
-layout(binding = 4) uniform sampler2D occlusionTexture;
-layout(binding = 5) uniform samplerCube environmentMap;
+layout(binding = TEXTURE_DIFFUSE) uniform sampler2D diffuseTexture;
+layout(binding = TEXTURE_NORMAL) uniform sampler2D normalTexture;
+layout(binding = TEXTURE_SPECULAR) uniform sampler2D specularTexture;
+layout(binding = TEXTURE_EMISSIVE) uniform sampler2D emissiveTexture;
+layout(binding = TEXTURE_OCCLUSION) uniform sampler2D occlusionTexture;
+layout(binding = TEXTURE_ENVIRONMENT) uniform samplerCube environmentMap;
 
 const float M_PI = 3.141592653;
 
@@ -80,27 +81,17 @@ vec3 cooktorrance_specular(in float NdL, in float NdV, in float NdH, in vec3 spe
     return (1.0 / rim) * specular * G * D;
 }
 
-vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
+vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 {
-    vec3 local_light_pos = (modelView3x3Matrix * lights.position.xyz);
-
-    float A = 20.0 / dot(local_light_pos - positionInViewSpace, local_light_pos - positionInViewSpace);
-
-    vec3 L = normalize(lightDirectionWorldSpace);
     vec3 V = normalize(viewDirectionWorldSpace);
-    vec3 H = normalize(L + V);
-    vec3 nn = normalize(normalsInNormalSpace);
     vec3 N = normalMap;
 
     float occlusion = metallicRoughness.r;
     float roughness = metallicRoughness.g;
     float metallic = metallicRoughness.b;
-    float alpha = albedo.a;
 
     vec3 specular = mix(vec3(0.04), albedo.rgb, metallic);
 
-    vec3 nm = tangentBinormalNormalMatrix * normalMap;
-    mat3x3 tnrm = transpose(normalMatrix);
     vec3 incident_eye = normalize(vec3(positionInWorldSpace) - cameraPosition);
     vec3 reflection_vector = -reflect(incident_eye, normalize(normalsInWorldSpace));
     vec3 envdiff = texture(environmentMap, reflection_vector, 10).xyz;
@@ -115,45 +106,54 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
     vec3 envspec = textureLod(environmentMap, reflected_diff, max(roughness * 11.0, textureQueryLod(environmentMap, reflected_diff).y)).xyz;
 
-    float NdL = max(0.001, dot(N, L));
     float NdV = max(0.001, dot(N, V));
-    float NdH = max(0.001, dot(N, H));
-    float HdV = max(0.001, dot(H, V));
-    float LdV = max(0.001, dot(L, V));
-
-    float bias = 0.005 * tan(acos(NdL));
-    bias = clamp(bias, 0.0, 0.01);
-
-    vec3 specfresnel = fresnel_factor(specular, HdV);
-    vec3 specref = cooktorrance_specular(NdL, NdV, NdH, specfresnel, roughness);
-
-    specref *= vec3(NdL);
-
-    vec3 diffref = (vec3(1.0) - specfresnel) * phong_diffuse() * NdL;
 
     vec3 reflected_light = vec3(0);
     vec3 diffuse_light = vec3(0);
+    // Ambient is a per-light property that floors the diffuse term; the lights sum into one
+    // floor so a single light reproduces the term exactly.
+    vec3 ambient_light = vec3(0);
 
-    vec3 light_color = lights.diffuse * lights.attenuation;
-    reflected_light += specref * light_color;
-    diffuse_light += diffref * light_color;
+    for (int lightIndex = 0; lightIndex < lightCount; lightIndex++)
+    {
+        vec3 L = normalize(lightDirectionWorldSpace[lightIndex]);
+        vec3 H = normalize(L + V);
+
+        float NdL = max(0.001, dot(N, L));
+        float NdH = max(0.001, dot(N, H));
+        float HdV = max(0.001, dot(H, V));
+
+        vec3 specfresnel = fresnel_factor(specular, HdV);
+        vec3 specref = cooktorrance_specular(NdL, NdV, NdH, specfresnel, roughness);
+
+        specref *= vec3(NdL);
+
+        vec3 diffref = (vec3(1.0) - specfresnel) * phong_diffuse() * NdL;
+
+        vec3 light_color = lights[lightIndex].diffuse * lights[lightIndex].attenuation;
+        reflected_light += specref * light_color;
+        diffuse_light += diffref * light_color;
+        ambient_light += lights[lightIndex].ambient;
+    }
 
     // IBL
     //vec2 brdf = texture2D(iblbrdf, vec2(roughness, 1.0 - NdV)).xy;
     vec3 iblspec = min(vec3(0.99), fresnel_factor(specular, NdV) * 0.8);
     reflected_light += iblspec * envspec;
     diffuse_light += envdiff * (1.0 / M_PI);
-    diffuse_light = max(diffuse_light, vec3(0.29859, 0.29973, 0.3));
+    diffuse_light = max(diffuse_light, ambient_light);
 
     return occlusion * diffuse_light * mix(albedo.rgb, vec3(0.0), metallic) + max(reflected_light, 0.0);
 }
 
 void main()
 {
-    vec4 albedo = u_useDiffuseTexture ? texture(diffuseTexture, textureCoordinates * textureRepeat) : u_baseColour;
-    vec3 normalMap = u_useNormalTexture ? normalize(texture(normalTexture, textureCoordinates * textureRepeat).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
-    vec4 specularMap = u_useSpecularTexture ? texture(specularTexture, textureCoordinates * textureRepeat) : vec4(1.0, u_roughness, u_metalness, 1.0);
-    vec3 colour = ads(0, albedo, specularMap, normalMap);
+    vec2 transformedTextureCoordinates = (textureTransform * vec3(textureCoordinates, 1.0)).xy;
+
+    vec4 albedo = u_useDiffuseTexture ? texture(diffuseTexture, transformedTextureCoordinates) : u_baseColour;
+    vec3 normalMap = u_useNormalTexture ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
+    vec4 specularMap = u_useSpecularTexture ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0, u_roughness, u_metalness, 1.0);
+    vec3 colour = ads(albedo, specularMap, normalMap);
 
     fragColor = vec4(colour, albedo.a);
 }

@@ -1,6 +1,8 @@
 module;
 
+#include <expected>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include <glm/glm.hpp>
@@ -34,7 +36,7 @@ private:
 
 public:
     explicit WaterLevel(raceengine::Engine& engine);
-    void step();
+    void update(float delta);
 };
 
 } // namespace osr
@@ -42,12 +44,36 @@ public:
 namespace osr
 {
 
+namespace
+{
+
+// The level is the bottom of this stack: nothing above it can carry on without the camera,
+// the shaders or the sky it is asking for, so a reported failure becomes the exception that
+// stops the process with the engine's own message attached.
+template <typename T> T orThrow(std::expected<T, std::string> result)
+{
+    if (!result)
+    {
+        throw std::runtime_error(result.error());
+    }
+
+    return std::move(result).value();
+}
+
+} // namespace
+
 WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
-    camera(engine.scene().createCamera(scene)),
+    camera(orThrow(engine.scene().createCamera(scene))),
     cameraController(engine)
 {
+    engine.scene().createLight(scene) = raceengine::Light{.position = glm::vec3(0.0f, 350.0f, 350.0f),
+                                                          .diffuse = glm::vec3(1.2859 * 2.5, 1.2973 * 2.5, 1.3 * 2.5),
+                                                          .specular = glm::vec3(1.2859, 1.2973, 1.3),
+                                                          .ambient = glm::vec3(0.29859, 0.29973, 0.3),
+                                                          .attenuation = 1.0f};
+
     engine.camera().setPosition(camera, 0, 600, -450);
     engine.camera().setRoll(camera, 0, 1, 0);
     engine.camera().lookAtPoint(camera, 0, 0, 0);
@@ -90,37 +116,39 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
           vulkanColourFragmentShader, vulkanHdrVertexShader, vulkanHdrFragmentShader, vulkanSkyboxVertexShader,
           vulkanSkyboxFragmentShader] = std::move(loaded).value();
 
-    auto presentationShader =
-        engine.shader().createShader("present", ShaderDescriptor{.vertexShaderSource = presentationVert,
-                                                                 .fragmentShaderSource = presentationFrag,
-                                                                 .vulkanVertexShaderSource = vulkanPresentationVert,
-                                                                 .vulkanFragmentShaderSource = vulkanPresentationFrag});
+    auto presentationShader = orThrow(engine.shader().createShader(
+        "present", ShaderDescriptor{.vertexShaderSource = presentationVert,
+                                    .fragmentShaderSource = presentationFrag,
+                                    .vulkanVertexShaderSource = vulkanPresentationVert,
+                                    .vulkanFragmentShaderSource = vulkanPresentationFrag}));
 
-    engine.shader().createShader("pbr", ShaderDescriptor{.vertexShaderSource = vert,
-                                                         .fragmentShaderSource = pbrFragmentShader,
-                                                         .vulkanVertexShaderSource = vulkanVert,
-                                                         .vulkanFragmentShaderSource = vulkanPbrFragmentShader});
+    orThrow(
+        engine.shader().createShader("pbr", ShaderDescriptor{.vertexShaderSource = vert,
+                                                             .fragmentShaderSource = pbrFragmentShader,
+                                                             .vulkanVertexShaderSource = vulkanVert,
+                                                             .vulkanFragmentShaderSource = vulkanPbrFragmentShader}));
 
-    engine.shader().createShader("colour", ShaderDescriptor{.vertexShaderSource = vert,
-                                                            .fragmentShaderSource = colourFragmentShader,
-                                                            .vulkanVertexShaderSource = vulkanVert,
-                                                            .vulkanFragmentShaderSource = vulkanColourFragmentShader});
+    orThrow(engine.shader().createShader("colour",
+                                         ShaderDescriptor{.vertexShaderSource = vert,
+                                                          .fragmentShaderSource = colourFragmentShader,
+                                                          .vulkanVertexShaderSource = vulkanVert,
+                                                          .vulkanFragmentShaderSource = vulkanColourFragmentShader}));
 
-    auto skyboxShader = engine.shader().createShader(
+    auto skyboxShader = orThrow(engine.shader().createShader(
         "skybox", ShaderDescriptor{.vertexShaderSource = skyboxVertexShader,
                                    .fragmentShaderSource = skyboxFragmentShader,
                                    .vulkanVertexShaderSource = vulkanSkyboxVertexShader,
-                                   .vulkanFragmentShaderSource = vulkanSkyboxFragmentShader});
+                                   .vulkanFragmentShaderSource = vulkanSkyboxFragmentShader}));
 
-    auto hdrShader =
+    auto hdrShader = orThrow(
         engine.shader().createShader("hdr", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
                                                              .fragmentShaderSource = hdrFragmentShader,
                                                              .vulkanVertexShaderSource = vulkanHdrVertexShader,
-                                                             .vulkanFragmentShaderSource = vulkanHdrFragmentShader});
+                                                             .vulkanFragmentShaderSource = vulkanHdrFragmentShader}));
 
-    scene.environment = engine.cubeMap().create("sky", front, back, left, right, top, bottom);
+    scene.environment = orThrow(engine.cubeMap().create("sky", front, back, left, right, top, bottom));
 
-    auto hdr = engine.postProcess().create("hdr", hdrShader.value());
+    auto hdr = orThrow(engine.postProcess().create("hdr", hdrShader));
 
     for (auto& attachment : engine.camera().getOutputBuffer(camera).attachments)
     {
@@ -134,13 +162,11 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     auto outputAttachment = engine.fbo().getAttachmentsOfType(
         engine.memoryStorage().frameBuffers.get(hdrPostProcess.output.value()), FboAttachmentType::Color);
 
-    engine.presenter().setPresenter(
-        Presenter{.output = outputAttachment.front(), .shader = presentationShader.value()});
+    engine.presenter().setPresenter(Presenter{.output = outputAttachment.front(), .shader = presentationShader});
 
-    auto& skyEntity =
-        engine.scene().createEntity(scene, CreateRenderableModelDTO{.node = engine.sceneManager().createNode(scene),
-                                                                    .shader = skyboxShader.value(),
-                                                                    .model = skyboxModel});
+    auto& skyEntity = engine.scene().createEntity(
+        scene, CreateRenderableModelDTO{
+                   .node = engine.sceneManager().createNode(scene), .shader = skyboxShader, .model = skyboxModel});
 
     engine.sceneManager().setScale(skyEntity.node, 2500.0f, 2500.0f, 2500.0f);
 
@@ -149,11 +175,15 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     DinosaurEntity(engine, scene);
     CarEntity(engine, scene);
     Bollard(engine, scene);
+
+    // Registered last, once the level is fully built: the engine may call this the moment the
+    // first tick runs, and a half-constructed level is not something it should be handed.
+    engine.onUpdate([this](float delta) { update(delta); });
 }
 
-void WaterLevel::step()
+void WaterLevel::update(float delta)
 {
-    cameraController.update(camera);
+    cameraController.update(camera, delta);
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }
 
