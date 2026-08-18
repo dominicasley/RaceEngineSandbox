@@ -7,11 +7,13 @@ layout(location = 0) out vec4 fragColor;
 // PassThroughVertexShader interpolants it never reads would leave them in the SPIR-V
 // only until optimization stripped them, so they are absent from the source instead.
 
+// Only baseColour is read; the rest of the block is declared so the offsets match the ABI.
 layout(set = 1, binding = 0) uniform MaterialData {
     vec4 baseColour;
-    vec4 repeatRoughMetal;
+    vec4 roughMetal;
     ivec4 useTextures;
     ivec4 useTextures2;
+    mat4 textureTransform;
 } material;
 
 void main()

@@ -22,11 +22,14 @@ layout(set = 0, binding = 0) uniform FrameData {
     vec4 lightAmbientAttenuation; // xyz ambient, w attenuation
 } frame;
 
+// textureTransform is a 3x3 UV transform in a mat4 slot: std140 pads a mat3's columns to 16
+// bytes each, which the C++ glm::mat3 does not, so the ABI carries it as a mat4.
 layout(set = 1, binding = 0) uniform MaterialData {
     vec4 baseColour;
-    vec4 repeatRoughMetal; // xy repeat, z roughness, w metalness
+    vec4 roughMetal;       // x roughness, y metalness
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
     ivec4 useTextures2;    // x occlusion
+    mat4 textureTransform; // KHR_texture_transform, upper 3x3
 } material;
 layout(set = 1, binding = 1) uniform sampler2D diffuseTexture;
 layout(set = 1, binding = 2) uniform sampler2D normalTexture;
@@ -140,9 +143,11 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
 void main()
 {
-    vec4 albedo = (material.useTextures.x != 0) ? texture(diffuseTexture, textureCoordinates * material.repeatRoughMetal.xy) : material.baseColour;
-    vec3 normalMap = (material.useTextures.y != 0) ? normalize(texture(normalTexture, textureCoordinates * material.repeatRoughMetal.xy).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
-    vec4 specularMap = (material.useTextures.z != 0) ? texture(specularTexture, textureCoordinates * material.repeatRoughMetal.xy) : vec4(1.0, material.repeatRoughMetal.z, material.repeatRoughMetal.w, 1.0);
+    vec2 transformedTextureCoordinates = (mat3(material.textureTransform) * vec3(textureCoordinates, 1.0)).xy;
+
+    vec4 albedo = (material.useTextures.x != 0) ? texture(diffuseTexture, transformedTextureCoordinates) : material.baseColour;
+    vec3 normalMap = (material.useTextures.y != 0) ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
+    vec4 specularMap = (material.useTextures.z != 0) ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0, material.roughMetal.x, material.roughMetal.y, 1.0);
     vec3 colour = ads(0, albedo, specularMap, normalMap);
 
     fragColor = vec4(colour, albedo.a);

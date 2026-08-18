@@ -23,7 +23,6 @@ struct light {
 
 uniform light lights;
 uniform vec3 cameraPosition;
-uniform vec2 textureRepeat;
 uniform mat3 modelView3x3Matrix;
 uniform mat3 normalMatrix;
 uniform mat4 localToWorld4x4Matrix;

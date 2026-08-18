@@ -23,7 +23,7 @@ struct light {
 
 uniform light lights;
 uniform vec3 cameraPosition;
-uniform vec2 textureRepeat;
+uniform mat3 textureTransform;
 uniform mat3 modelView3x3Matrix;
 uniform mat3 normalMatrix;
 uniform mat4 localToWorld4x4Matrix;
@@ -150,9 +150,11 @@ vec3 ads(int lightIndex, vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
 void main()
 {
-    vec4 albedo = u_useDiffuseTexture ? texture(diffuseTexture, textureCoordinates * textureRepeat) : u_baseColour;
-    vec3 normalMap = u_useNormalTexture ? normalize(texture(normalTexture, textureCoordinates * textureRepeat).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
-    vec4 specularMap = u_useSpecularTexture ? texture(specularTexture, textureCoordinates * textureRepeat) : vec4(1.0, u_roughness, u_metalness, 1.0);
+    vec2 transformedTextureCoordinates = (textureTransform * vec3(textureCoordinates, 1.0)).xy;
+
+    vec4 albedo = u_useDiffuseTexture ? texture(diffuseTexture, transformedTextureCoordinates) : u_baseColour;
+    vec3 normalMap = u_useNormalTexture ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
+    vec4 specularMap = u_useSpecularTexture ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0, u_roughness, u_metalness, 1.0);
     vec3 colour = ads(0, albedo, specularMap, normalMap);
 
     fragColor = vec4(colour, albedo.a);
