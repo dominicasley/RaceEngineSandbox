@@ -12,6 +12,7 @@ export module osr.game:WaterLevel;
 import :Bollard;
 import :CarEntity;
 import :DinosaurEntity;
+import :GroundPlane;
 import :FPSCameraController;
 
 import raceengine;
@@ -207,6 +208,7 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     this->sky = &skyEntity;
 
+    GroundPlane(engine, scene);
     DinosaurEntity(engine, scene);
     CarEntity(engine, scene);
     Bollard(engine, scene);
