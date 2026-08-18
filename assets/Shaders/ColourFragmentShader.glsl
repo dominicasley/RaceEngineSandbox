@@ -28,13 +28,13 @@ uniform mat3 normalMatrix;
 uniform mat4 localToWorld4x4Matrix;
 uniform float u_roughness;
 uniform float u_metalness;
-uniform vec4 baseColour;
+uniform vec4 u_baseColour;
 
 layout(binding = 5) uniform samplerCube environmentMap;
 
 void main()
 {
-    vec4 albedo = baseColour;
+    vec4 albedo = u_baseColour;
 
     if (albedo.a < 0.01)
     {
