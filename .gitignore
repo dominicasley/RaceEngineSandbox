@@ -1,0 +1,8 @@
+# Test models are not carried in the repository. They are large (430 MiB of glb at the
+# point this was written, one export alone over GitHub's 100 MiB per-file limit) and most
+# of them — trex, totoro, lotus, water, box — are scratch, not content.
+#
+# The scene does load several of these, so a fresh clone cannot run scripts/smoke.sh or
+# scripts/verify-parity.sh until they are put back by hand. .gitattributes already routes
+# binary assets to LFS if any of this is ever tracked again.
+assets/Models/
