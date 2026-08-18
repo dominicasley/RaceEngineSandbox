@@ -1,12 +1,13 @@
 #version 420
-#define MAX_JOINTS 128
+// MAX_JOINTS, MAX_LIGHTS and every ATTRIBUTE_* location are defined by the renderer from
+// Graphics/Api/RenderContract.cppm; this file must not spell one of those numbers.
 
-layout(location = 0) in vec3 vertexPositionModelSpace;
-layout(location = 1) in vec2 vertexTextureCoordinates;
-layout(location = 2) in vec3 vertexNormalModelSpace;
-layout(location = 3) in vec4 vertexTangentModelSpace;
-layout(location = 4) in vec4 vertexJointIndicies;
-layout(location = 5) in vec4 vertexJointWeights;
+layout(location = ATTRIBUTE_POSITION) in vec3 vertexPositionModelSpace;
+layout(location = ATTRIBUTE_TEXCOORD) in vec2 vertexTextureCoordinates;
+layout(location = ATTRIBUTE_NORMAL) in vec3 vertexNormalModelSpace;
+layout(location = ATTRIBUTE_TANGENT) in vec4 vertexTangentModelSpace;
+layout(location = ATTRIBUTE_JOINT) in vec4 vertexJointIndicies;
+layout(location = ATTRIBUTE_WEIGHT) in vec4 vertexJointWeights;
 
 uniform bool animated;
 uniform mat4 localToScreen4x4Matrix;
@@ -24,7 +25,8 @@ struct light {
 	float attenuation;
 };
 
-uniform light lights;
+uniform light lights[MAX_LIGHTS];
+uniform int lightCount;
 
 out vec2 textureCoordinates;
 out vec3 positionInWorldSpace;
@@ -33,10 +35,9 @@ out vec3 normalsInNormalSpace;
 out vec3 tangentInNormalSpace;
 out vec3 bitangentInNormalSpace;
 out vec3 normalsInWorldSpace;
-out vec4 jointIndicies;
 out vec3 viewDirectionWorldSpace;
-out vec3 lightDirectionWorldSpace;
-out mat3 tangentBinormalNormalMatrix;
+// One direction per declared light; elements at or past lightCount are never read.
+out vec3 lightDirectionWorldSpace[MAX_LIGHTS];
 
 void main()
 {
@@ -50,7 +51,6 @@ void main()
 		jointWeights.w * jointTransformationMatrixes[int(vertexJointIndicies.w)];
 	}
 
-	jointIndicies = vertexJointIndicies;
 	textureCoordinates = vertexTextureCoordinates;
 	positionInWorldSpace = vec3(localToWorld4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 	positionInViewSpace = vec3(localToView4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0));
@@ -62,16 +62,17 @@ void main()
 	tangentInNormalSpace = normalize(normalMatrix * mat3(boneTransform) * vec3(vertexTangentModelSpace));
 	bitangentInNormalSpace = normalize(normalMatrix * mat3(boneTransform) * bitangent);
 
-	tangentBinormalNormalMatrix = mat3(
+	mat3 tangentBinormalNormalMatrix = mat3(
 		tangentInNormalSpace.x, bitangentInNormalSpace.x, normalsInNormalSpace.x,
 		tangentInNormalSpace.y, bitangentInNormalSpace.y, normalsInNormalSpace.y,
 		tangentInNormalSpace.z, bitangentInNormalSpace.z, normalsInNormalSpace.z
 	);
 
-	lightDirectionWorldSpace = tangentBinormalNormalMatrix * (modelView3x3Matrix * lights.position);
+	for (int lightIndex = 0; lightIndex < lightCount; lightIndex++) {
+		lightDirectionWorldSpace[lightIndex] = tangentBinormalNormalMatrix * (modelView3x3Matrix * lights[lightIndex].position);
+	}
+
 	viewDirectionWorldSpace	= tangentBinormalNormalMatrix * -positionInViewSpace;
 
 	gl_Position	= localToScreen4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0);
 }
-
-

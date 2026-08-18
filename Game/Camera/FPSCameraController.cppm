@@ -24,7 +24,9 @@ export class FPSCameraController
 
 public:
     explicit FPSCameraController(raceengine::Engine& engine);
-    void update(Camera& camera);
+    // delta is the simulation tick, not the frame: movement integrates at a fixed rate
+    // however fast the renderer happens to be running.
+    void update(Camera& camera, float delta);
 };
 
 } // namespace osr
@@ -37,7 +39,7 @@ FPSCameraController::FPSCameraController(raceengine::Engine& engine) :
 {
 }
 
-void FPSCameraController::update(Camera& camera)
+void FPSCameraController::update(Camera& camera, float delta)
 {
     auto state = engine.window().state();
     auto [cmx, cmy] = engine.window().mousePosition();
@@ -66,12 +68,6 @@ void FPSCameraController::update(Camera& camera)
 
     auto right = glm::vec3(sin(rotateX - static_cast<double>(3.14f / 2.0f)), 0,
                            cos(rotateX - static_cast<double>(3.14f / 2.0f)));
-
-    const auto delta = engine.window().delta();
-    if (delta <= 0.0f)
-    {
-        return;
-    }
 
     velocity *= 1 / (1 + (delta * 15.0f));
     acceleration = glm::vec3(300.0f * delta);

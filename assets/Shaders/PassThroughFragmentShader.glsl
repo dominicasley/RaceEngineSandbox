@@ -1,17 +1,19 @@
 #version 420 core
 
+// The TEXTURE_* bindings are defined by the renderer from Graphics/Api/RenderContract.cppm;
+// this file must not spell one of those numbers.
+
 layout(location = 0) out vec4 fragColor;
-layout(binding = 0) uniform sampler2D diffuseTexture;
-layout(binding = 1) uniform sampler2D normalTexture;
-layout(binding = 2) uniform sampler2D roughnessTexture;
-layout(binding = 3) uniform sampler2D emissiveTexture;
-layout(binding = 4) uniform sampler2D occlusionTexture;
-layout(binding = 5) uniform samplerCube environmentMap;
+layout(binding = TEXTURE_DIFFUSE) uniform sampler2D diffuseTexture;
+layout(binding = TEXTURE_NORMAL) uniform sampler2D normalTexture;
+layout(binding = TEXTURE_SPECULAR) uniform sampler2D roughnessTexture;
+layout(binding = TEXTURE_EMISSIVE) uniform sampler2D emissiveTexture;
+layout(binding = TEXTURE_OCCLUSION) uniform sampler2D occlusionTexture;
+layout(binding = TEXTURE_ENVIRONMENT) uniform samplerCube environmentMap;
 
 in vec2 textureCoordinates;
 in vec3 positionInWorldSpace;
 in vec3 normalsInWorldSpace;
-in vec4 jointIndicies;
 
 void main() 
 {	

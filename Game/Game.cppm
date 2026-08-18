@@ -34,11 +34,13 @@ Game::Game() :
 {
 }
 
+// The level registered its update with the engine when it was built, so the loop no longer
+// carries an ordering contract of its own: the engine runs game logic on its fixed tick, at a
+// point of its choosing, and a frame renders the state the tick before it produced.
 void Game::run()
 {
     while (engine.running())
     {
-        waterLevel.step();
         engine.step();
     }
 }

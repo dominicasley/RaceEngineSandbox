@@ -34,7 +34,7 @@ private:
 
 public:
     explicit WaterLevel(raceengine::Engine& engine);
-    void step();
+    void update(float delta);
 };
 
 } // namespace osr
@@ -48,6 +48,12 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     camera(engine.scene().createCamera(scene)),
     cameraController(engine)
 {
+    engine.scene().createLight(scene) = raceengine::Light{.position = glm::vec3(0.0f, 350.0f, 350.0f),
+                                                          .diffuse = glm::vec3(1.2859 * 2.5, 1.2973 * 2.5, 1.3 * 2.5),
+                                                          .specular = glm::vec3(1.2859, 1.2973, 1.3),
+                                                          .ambient = glm::vec3(0.29859, 0.29973, 0.3),
+                                                          .attenuation = 1.0f};
+
     engine.camera().setPosition(camera, 0, 600, -450);
     engine.camera().setRoll(camera, 0, 1, 0);
     engine.camera().lookAtPoint(camera, 0, 0, 0);
@@ -149,11 +155,15 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     DinosaurEntity(engine, scene);
     CarEntity(engine, scene);
     Bollard(engine, scene);
+
+    // Registered last, once the level is fully built: the engine may call this the moment the
+    // first tick runs, and a half-constructed level is not something it should be handed.
+    engine.onUpdate([this](float delta) { update(delta); });
 }
 
-void WaterLevel::step()
+void WaterLevel::update(float delta)
 {
-    cameraController.update(camera);
+    cameraController.update(camera, delta);
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }
 
