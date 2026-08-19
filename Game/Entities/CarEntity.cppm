@@ -63,6 +63,14 @@ public:
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
+    // The node this car is drawn through, so that something else can drive it. The position set
+    // above is the grid slot and nothing more: from the first tick it is written by the vehicle
+    // model, and the scale and the entity's own flags stay this entity's.
+    [[nodiscard]] SceneNode& sceneNode() const
+    {
+        return node;
+    }
+
 private:
     Entity& entity;
     SceneNode& node;

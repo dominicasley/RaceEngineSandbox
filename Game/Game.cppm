@@ -2,8 +2,15 @@ export module osr.game;
 
 export import :Bollard;
 export import :CarEntity;
+export import :ChaseCameraController;
 export import :DinosaurEntity;
+// Nothing in this game constructs one any more — the scene is watched from the chase camera — and
+// it stays built and exported because a free-fly view is the tool a scene is inspected with, not
+// something this level happens to have finished with.
 export import :FPSCameraController;
+export import :PlayerCar;
+export import :SteeringController;
+export import :TrackFrame;
 export import :WaterLevel;
 
 import raceengine;

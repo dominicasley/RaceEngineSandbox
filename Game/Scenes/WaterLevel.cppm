@@ -1,6 +1,7 @@
 module;
 
 #include <expected>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -11,9 +12,11 @@ export module osr.game:WaterLevel;
 
 import :Bollard;
 import :CarEntity;
+import :ChaseCameraController;
 import :DinosaurEntity;
 import :GroundPlane;
-import :FPSCameraController;
+import :PlayerCar;
+import :TrackFrame;
 
 import raceengine;
 
@@ -26,9 +29,19 @@ private:
     raceengine::Engine& engine;
     Scene& scene;
     Camera& camera;
-    FPSCameraController cameraController;
+    // The track, generated rather than authored, and built once: it is a BVH over the quarter of a
+    // million triangles a 200 x 40 m ground comes to at a quarter-metre pitch, so a tick that
+    // rebuilt it would be a tick that did nothing else. Declared before everything that queries it,
+    // which is the same rule the engine's own member list runs on.
+    raceengine::ProvingGroundDescriptor track;
+    raceengine::PhysicsWorld provingGround;
+    ChaseCameraController chaseCamera;
 
     RenderableModel* sky;
+    // Built in the body rather than the initialiser list because both need the "pbr" shader, which
+    // is created down there out of a file this level awaits.
+    std::optional<CarEntity> car;
+    std::optional<PlayerCar> player;
 
     glm::vec3 velocity = glm::vec3(0.0f);
     glm::vec3 cpuVelocity = glm::vec3(0.0f);
@@ -67,9 +80,9 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
-    // Yaw a little off the building's axis and pitch just above the horizon: the spawn view, and
-    // the one every capture is taken from, because the controller writes the direction each tick.
-    cameraController(engine, -2.356, 0.110)
+    track(raceengine::defaultProvingGround()),
+    provingGround(orThrow(raceengine::PhysicsWorld::create(orThrow(raceengine::generateProvingGround(track))))),
+    chaseCamera(engine)
 {
     // Directional, and its direction is the exact opposite of the position the shading reads as
     // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
@@ -118,16 +131,11 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     // it. Measured, 0.30 bought the same sky as contrast 0.95 and cost two values off the facade.
     engine.camera().setToneCurve(camera, ToneCurve{.contrast = 1.0f, .toe = 0.12f, .shoulder = 0.1f});
 
-    // Standing on the apron rather than looking down on it. The aerial view this spawned at framed
-    // the whole scene and showed almost nothing about how it is lit: the ground-to-wall crease, the
-    // recesses in the facade and the contact under the car are all where the indirect light does its
-    // work, and from six hundred units up they are a handful of pixels each. From here the crease
-    // runs across the frame and the bollard and the car are in it, which is what makes a capture
-    // worth comparing.
-    engine.camera().setPosition(camera, 270, 32, 250);
     engine.camera().setRoll(camera, 0, 1, 0);
-    // Not lookAtPoint: FPSCameraController writes the direction on every tick, so the view it was
-    // constructed with is the spawn view and this call would be overwritten before the first frame.
+    // No position and no lookAtPoint here. The chase camera below writes both on every tick and is
+    // the only thing that does, so anything set here would be overwritten before the first frame —
+    // which is precisely what happened to the aerial spawn view this scene used to have, for long
+    // enough to be worth a note in the engine's own documentation.
 
     auto loaded = awaitAll(engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
@@ -367,8 +375,16 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     GroundPlane(engine, scene);
     DinosaurEntity(engine, scene);
-    CarEntity(engine, scene);
     Bollard(engine, scene);
+
+    car.emplace(engine, scene);
+
+    // Ten metres along the track's centreline, which is fifty metres of flat tarmac short of the
+    // kerb band and is where the grid slot was chosen to put the car exactly where this scene has
+    // always had one. The height is asked of the ground rather than assumed to be zero, because
+    // the ground is a function and the answer is free.
+    player.emplace(engine, provingGround, car->sceneNode(),
+                   glm::dvec3(0.0, raceengine::sampleProvingGround(track, 0.0, 10.0).height, 10.0));
 
     // The image-based lighting graph. Three nodes, and the point of each is what it can see:
     //
@@ -421,9 +437,13 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine.onUpdate([this](float delta) { update(delta); });
 }
 
+// Writers before readers, inside the stage the engine calls the game's own logic: the car is
+// stepped and writes its node, the camera is aimed at where the car ended up, and the sky is put
+// back on the camera. Entity behaviours and the scene's own settling both run after this returns.
 void WaterLevel::update(float delta)
 {
-    cameraController.update(camera, delta);
+    player->update(delta);
+    chaseCamera.update(camera, player->vehicle(), player->acceleration(), delta);
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }
 
