@@ -15,7 +15,7 @@ export class CarEntity
 protected:
     constexpr const static auto load = [](raceengine::Engine& engine)
     {
-        return engine.resource().loadModelAsync("assets/Models/MK2-GTI/MK2-GTI.glb").get();
+        return engine.resource().loadModelAsync("assets/Models/golf_gti_2018.glb").get();
     };
 
 public:
@@ -53,7 +53,14 @@ public:
         // and a sky-lit indirect term while the ground a few metres away takes only the second,
         // which is the whole of what the probes changed, in one frame.
         engine.sceneManager().setPosition(node, 230.0f, 0.0f, -190.0f);
-        engine.sceneManager().setScale(node, 0.1f, 0.1f, 0.1f);
+
+        // A world unit is a tenth of a metre here — the bollard is a metre tall at its scale of 10
+        // and the camera stands at 32 — and this glTF is authored in *metres*: 2.05 x 1.48 x 4.31,
+        // which is a Mk7 Golf to the centimetre. The Lotus it replaced was authored in centimetres
+        // and so took 0.1 to reach the same place. Carrying that number over left the car a hundred
+        // times too small, which reads as a missing asset rather than as a wrong scale: at 4 cm
+        // long it is one white pixel beside a building.
+        engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
 private:

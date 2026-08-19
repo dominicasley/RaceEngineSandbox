@@ -145,7 +145,7 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                            engine.resource().loadTextFileAsync("assets/Shaders/AoBlurFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/BloomDownsampleFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/BloomUpsampleFragmentShader.glsl"),
-                           engine.resource().loadTextureAsync("assets/Luts/LUT_TealOrangeContrastTable.tga"),
+                           engine.resource().loadTextFileAsync("assets/Luts/MoodyFilm.cube"),
                            engine.resource().loadModelAsync("assets/Models/SkyBox/SkyBox.glb"),
                            engine.resource().loadTextFileAsync("assets/Shaders/SkyboxVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/SkyboxFragmentShader.glsl"),
@@ -164,8 +164,8 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     auto [presentationVert, presentationFrag, vert, pbrFragmentShader, depthVertexShader, depthFragmentShader,
           colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader, prepassVertexShader,
           prepassFragmentShader, gtaoFragmentShader, aoBlurFragmentShader, bloomDownsampleFragmentShader,
-          bloomUpsampleFragmentShader, streetGrade, skyboxModel, skyboxVertexShader, skyboxFragmentShader, front, back, left, right,
-          top, bottom] = std::move(loaded).value();
+          bloomUpsampleFragmentShader, moodyFilmGrade, skyboxModel, skyboxVertexShader, skyboxFragmentShader, front,
+          back, left, right, top, bottom] = std::move(loaded).value();
 
     auto presentationShader = orThrow(engine.shader().createShader(
         "present", ShaderDescriptor{.vertexShaderSource = presentationVert, .fragmentShaderSource = presentationFrag}));
@@ -191,29 +191,29 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     // The meter's reduction runs through the same fullscreen vertex stage the tone map does; what
     // differs is entirely in the fragment stage, which is told which level of the chain it is.
-    auto luminanceShader = orThrow(engine.shader().createShader(
-        "luminance",
-        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = luminanceFragmentShader}));
+    auto luminanceShader = orThrow(
+        engine.shader().createShader("luminance", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
+                                                                   .fragmentShaderSource = luminanceFragmentShader}));
 
     // The occlusion prepass's pair, and the two fullscreen stages that turn what it draws into one
     // visibility term per pixel. The prepass has a vertex stage of its own for the reason the
     // cascades' depth pass does: it writes two varyings where the shading pair writes ten.
     auto prepassShader = orThrow(engine.shader().createShader(
-        "occlusion prepass", ShaderDescriptor{.vertexShaderSource = prepassVertexShader,
-                                              .fragmentShaderSource = prepassFragmentShader}));
+        "occlusion prepass",
+        ShaderDescriptor{.vertexShaderSource = prepassVertexShader, .fragmentShaderSource = prepassFragmentShader}));
 
     auto gtaoShader = orThrow(engine.shader().createShader(
         "gtao", ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = gtaoFragmentShader}));
 
-    auto aoBlurShader = orThrow(engine.shader().createShader(
-        "ao blur",
-        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = aoBlurFragmentShader}));
+    auto aoBlurShader = orThrow(
+        engine.shader().createShader("ao blur", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
+                                                                 .fragmentShaderSource = aoBlurFragmentShader}));
 
     // The bloom chain's two stages, both through the same fullscreen vertex stage as everything else
     // in the post chain.
     auto bloomDownsampleShader = orThrow(engine.shader().createShader(
-        "bloom downsample",
-        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = bloomDownsampleFragmentShader}));
+        "bloom downsample", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
+                                             .fragmentShaderSource = bloomDownsampleFragmentShader}));
 
     auto bloomUpsampleShader = orThrow(engine.shader().createShader(
         "bloom upsample",
@@ -294,14 +294,12 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     //
     // 0.30 is what the intensity settled at, and it stayed: with the sky no longer in the source
     // the spill is the sun and the lights, which is the statement it was meant to be making.
-    orThrow(engine.bloom().enable(camera, raceengine::CreateBloomDTO{
-                                              .downsampleShader = bloomDownsampleShader,
-                                              .upsampleShader = bloomUpsampleShader,
-                                              .bloom = raceengine::Bloom{.threshold = 2.0f,
-                                                                         .knee = 0.6f,
-                                                                         .intensity = 0.30f,
-                                                                         .maximum = 20.0f,
-                                                                         .spread = 2.2f}}));
+    orThrow(engine.bloom().enable(
+        camera, raceengine::CreateBloomDTO{
+                    .downsampleShader = bloomDownsampleShader,
+                    .upsampleShader = bloomUpsampleShader,
+                    .bloom = raceengine::Bloom{
+                        .threshold = 2.0f, .knee = 0.6f, .intensity = 0.30f, .maximum = 20.0f, .spread = 2.2f}}));
 
     auto hdr = orThrow(engine.postProcess().create("hdr", hdrShader));
 
@@ -334,7 +332,10 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     // `assets/Luts/street.cube` beside it is the look this shader used to hold as constants, baked
     // by scripts/bake-grade.py; `scripts/grade-contact-sheet.py` puts every grade in the folder on
     // one ungraded plate so a look can be chosen by looking rather than by rebuilding.
-    auto grade = orThrow(engine.colourGrade().loadStrip("teal and orange", streetGrade));
+    //
+    // This one is a `.cube` straight out of Photoshop's export plugin — 32 entries a side against
+    // the strips' sixteen, which the shader reads off `textureSize` rather than being told.
+    auto grade = orThrow(engine.colourGrade().load("moody film", moodyFilmGrade));
 
     engine.presenter().setPresenter(Presenter{.output = outputAttachment.front(),
                                               .shader = presentationShader,

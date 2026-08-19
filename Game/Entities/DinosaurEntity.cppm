@@ -63,7 +63,7 @@ public:
                        .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model});
 
         // Animated, so it is not part of the world a probe records — see CarEntity.
-        renderable.staticGeometry = false;
+        renderable.staticGeometry = true;
 
         const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, renderable);
 
