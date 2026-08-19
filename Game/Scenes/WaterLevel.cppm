@@ -16,8 +16,8 @@ import :CarEntity;
 import :ChaseCameraController;
 import :DinosaurEntity;
 import :FPSCameraController;
-import :GroundPlane;
 import :PlayerCar;
+import :RaceTrack;
 import :TrackFrame;
 
 import raceengine;
@@ -31,12 +31,14 @@ private:
     raceengine::Engine& engine;
     Scene& scene;
     Camera& camera;
-    // The track, generated rather than authored, and built once: it is a BVH over the quarter of a
-    // million triangles a 200 x 40 m ground comes to at a quarter-metre pitch, so a tick that
-    // rebuilt it would be a tick that did nothing else. Declared before everything that queries it,
-    // which is the same rule the engine's own member list runs on.
-    raceengine::ProvingGroundDescriptor track;
-    raceengine::PhysicsWorld provingGround;
+    // Mount Panorama, once: the loaded model, and the physics world whose collision mesh was read
+    // straight out of it. Both are built in the initialiser list and in this order, because the
+    // renderer frees a mesh buffer's bytes when it uploads them and the collision mesh has to be
+    // taken while they are still there. 615,197 triangles of BVH, so a tick that rebuilt it would be
+    // a tick that did nothing else. Declared before everything that queries them, which is the same
+    // rule the engine's own member list runs on.
+    raceengine::Resource<raceengine::Model> trackModel;
+    raceengine::PhysicsWorld track;
 
     // Exactly one of these is engaged, chosen in the constructor. Both write the camera's direction
     // on every tick, so a scene holding two live controllers would have one of them silently
@@ -123,8 +125,8 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
-    track(raceengine::defaultProvingGround()),
-    provingGround(orThrow(raceengine::PhysicsWorld::create(orThrow(raceengine::generateProvingGround(track)))))
+    trackModel(orThrow(engine.resource().loadModelAsync(std::string(trackAsset)).get())),
+    track(orThrow(raceengine::PhysicsWorld::create(orThrow(trackCollisionMesh(engine.memoryStorage(), trackModel)))))
 {
     // Directional, and its direction is the exact opposite of the position the shading reads as
     // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
@@ -144,33 +146,31 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                             .ambient = glm::vec3(0.0f),
                             .attenuation = 1.0f};
 
-    // The scene's radiance is relative — a sun of 3.2 and an asphalt albedo of about 0.1 — so this
-    // is the number that turns it into a picture. It is no longer the last word on it: the camera
-    // meters the frame it drew and moves its own shutter (see below), and this is where that
-    // adaptation starts from and what it holds until the first reading comes back. Hand-tuned, and
-    // still the reference the meter is judged against: at one, which is what "no exposure" means,
-    // sunlit asphalt lands at a twentieth of the tone curve and every shadow crushes to black;
-    // past about five it blows out the sky.
-    engine.camera().setExposure(camera, 2.5f);
+    // Faster film, and it is not a look — it is what stops the meter running out of shutter.
+    //
+    // Film speed and aperture cancel out of the exposure multiplier, so two cameras metering the
+    // same scene agree on the picture and disagree only on the shutter it took. The one place they
+    // change anything is at the clamp, and this scene reaches it: a circuit of 0.07-albedo asphalt
+    // under an open sky meters 2.6 stops darker than the sunlit apron this level used to be, and on
+    // ISO 6400 the meter asked for 1/1.5 s against a `maxShutterTime` of 1/4 and sat pinned there,
+    // 1.42 stops under its own reading, with every further scene change moving nothing at all. Four
+    // times the film speed puts the answer at 1/6 s, back inside the range, and the meter is a meter
+    // again.
+    engine.camera().setFilmSpeed(camera, 25600);
+
+    // The scene's radiance is relative — a sun of 3.2 and an asphalt albedo of 0.07 — so this is the
+    // number that turns it into a picture, and it is where the adaptation starts and what the camera
+    // holds until the first reading comes back. Measured rather than guessed: the chase view settles
+    // at 19.2 and the fixed one at 3.1, because the two see wildly different amounts of sky, and
+    // seeding anywhere near the apron's old 2.5 leaves a 120-frame capture still climbing.
+    engine.camera().setExposure(camera, 18.0f);
     // How dark the dark parts of the picture are, which is a different question from how much light
-    // there is. The toe grips the bottom of the output range: 0.35 was the punchiest reading of a
-    // frame whose shadows were still meant to hold detail, and 0.12 opens them back up. Measured on
-    // this frame it moves the shadowed facade by about two values out of 255 — which is the useful
-    // finding, because it says the facade is not being *crushed* by the curve, there is simply
-    // almost no light on it. The lever that mattered was the compensation below.
-    //
-    // Contrast is 1.0, down from 1.1, and that is the whole of what was wrong with the sky. It
-    // multiplies log radiance about middle grey *before* the filmic curve, and Narkowicz's fit
-    // reaches exactly 1.0 at an input of 7.24 — so 1.1 dragged the print-white ceiling down from an
-    // exposed radiance of 7.24 to 5.17 and pinned everything above it at the same output value.
-    // Half the sky was landing there with no gradient left in it. At 1.0 that is 39% instead of 54%
-    // and the sky uses 24 values of output range instead of 17, and the shadowed facade came out
-    // *brighter* by a value rather than paying for it — because a contrast above one pushes away
-    // from the pivot in both directions, and the facade is a long way below it.
-    //
-    // The shoulder is not the lever it looks like: it is pow(mapped, 1 + shoulder * mapped), and
-    // pow(1, anything) is 1, so it darkens what is near white and cannot touch what is already at
-    // it. Measured, 0.30 bought the same sky as contrast 0.95 and cost two values off the facade.
+    // there is. Carried over from the apron unchanged, and the reasoning that fixed it there is what
+    // says not to reach for it here: contrast multiplies log radiance about middle grey *before* the
+    // filmic curve, and Narkowicz's fit reaches exactly 1.0 at an input of 7.24, so anything above
+    // one drags the print-white ceiling down and flattens the sky against it. The shoulder is not
+    // the lever it looks like either — it is pow(mapped, 1 + shoulder * mapped), and pow(1, anything)
+    // is 1, so it darkens what is *near* white and cannot touch what is already at it.
     engine.camera().setToneCurve(camera, ToneCurve{.contrast = 1.0f, .toe = 0.12f, .shoulder = 0.1f});
 
     engine.camera().setRoll(camera, 0, 1, 0);
@@ -187,12 +187,28 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     }
     else
     {
-        // The rendering gate's framing, and it stands on the apron rather than looking down on it.
-        // The ground-to-wall crease, the recesses in the facade and the contact under the car are
-        // where the indirect light does its work, and from six hundred units up they are a handful
-        // of pixels each. Yaw a little off the building's axis, pitch just above the horizon.
-        engine.camera().setPosition(camera, 270, 32, 250);
-        freeCamera.emplace(engine, -2.356, 0.110);
+        // The rendering gate's framing, and it deliberately has no car in it.
+        //
+        // The gate exists to be moved by the renderer and by nothing else. On the apron that was
+        // arranged by making the car small and distant, which left it moved by physics a little; on
+        // a circuit the car is either the subject or it is absent, and absent is what the split asks
+        // for now that the driving gate covers the car end to end.
+        //
+        // So it looks at Hell Corner from above and behind, which is the one place on this asset
+        // where every surface it carries is in one frame: road, the edge either side of it, painted
+        // kerb — the only saturated colour a circuit has, and the one thing the grade acts on
+        // visibly — a gravel trap, grass, and the concrete wall, which is the only vertical surface
+        // and therefore the only thing that can cast a shadow onto the road or give the occlusion
+        // term a crease to find. Two hundred metres of pit straight run away behind it, which is
+        // what says whether the cascades still reach.
+        //
+        // It is a hundred and eighty metres from the grid, and that distance is bounded rather than
+        // free: the skybox follows the camera at 2500 units and the scene's one light probe has to
+        // be inside it from *both* cameras, so the probe sits between them.
+        const auto stand = toWorldUnits(glm::dvec3(-60.0, 55.0, -545.0));
+        engine.camera().setPosition(camera, static_cast<float>(stand.x), static_cast<float>(stand.y),
+                                    static_cast<float>(stand.z));
+        freeCamera.emplace(engine, -2.1376, -0.2549);
     }
 
     auto loaded = awaitAll(engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
@@ -287,15 +303,15 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     scene.environment = orThrow(engine.cubeMap().create("sky", front, back, left, right, top, bottom));
 
-    // Ambient occlusion, which on this scene is the light the probes hand to a surface that cannot
-    // actually see the sky they photographed. A probe is one point and one box: it says how bright
-    // the world is near the building, and nothing in it knows that the ground in the angle between
-    // two walls sees a fifth of that. This is what knows.
+    // Ambient occlusion, which is the light the one probe hands to a surface that cannot actually
+    // see the sky it photographed. A probe is one point: it says how bright the world is over the
+    // start line, and nothing in it knows that the gutter between the road and the wall sees a fifth
+    // of that. This is what knows.
     //
-    // Forty units of radius against a building about six hundred across: contact darkening where the
-    // walls meet the apron and under the car, and not a general dimming of the scene. Strength 1.4 is
-    // the punchy reading of an integral that is already correct — the visibility term is what it is,
-    // and a power on it deepens the crease without touching the open ground.
+    // Radius and strength are the apron's numbers carried over untuned. Four metres of radius is the
+    // right order for what is left to occlude here — the crease where the wall meets the road, the
+    // kerb's own lip, and the contact under the car — but it was chosen against a building, and
+    // nothing on this circuit has been measured against it.
     orThrow(engine.ambientOcclusion().enable(
         camera, raceengine::CreateAmbientOcclusionDTO{
                     .prepassShader = prepassShader,
@@ -306,60 +322,36 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     // Auto exposure, ahead of the tone map in the camera's chain because what it measures is the
     // radiance the tone map is about to consume.
     //
-    // The dial is the level's because the exchange rate between this scene's relative radiance and
-    // a photometric meter's cd/m² is the level's: a sun of 3.2 is a number chosen here, and the
-    // meter's own reading of it — 0.081 average, exposure 1.28 — is not what this street is meant
-    // to look like. Three quarters of a stop up lands it at about 2.16, which is deliberately a
-    // fifth of a stop *under* the 2.5 set by hand above rather than on it. That direction is the
-    // whole point: the frame is a sunlit apron beside a building whose shadow the light probes
-    // exist to keep dark, its brightest pixel had about a third of a stop left before the clip, and
-    // the shoulder holding it back is only 0.10. Exposing for the highlight and letting the shadow
-    // fall is what keeps the roof off the clip and the shadow genuinely dark.
+    // The dial is the level's because the exchange rate between this scene's relative radiance and a
+    // photometric meter's cd/m² is the level's: a sun of 3.2 is a number chosen here.
+    //
+    // Fully centre weighted, and on a circuit that is worth more than it was on the apron rather
+    // than less. The shot a flat average is worst at is the one with the subject low in the frame
+    // and open sky above it, which is every frame of a driving game — and here the ground is
+    // 0.07-albedo asphalt against a sky three orders of magnitude brighter, so a flat geometric mean
+    // answers almost entirely to how much sky the camera happens to be pointing at. Measured on the
+    // two gate views, which see very different amounts of it: the chase view settles at exposure
+    // 19.2 and the fixed one at 3.1, two and a half stops apart in the same world.
+    //
+    // Compensation and weighting are not the same dial — the compensation says how far this whole
+    // scene sits from a photometric reading and is fixed per level, the weighting says which part of
+    // the frame gets to decide and answers differently every time the camera turns.
     orThrow(engine.autoExposure().enable(
         camera, raceengine::CreateAutoExposureDTO{
                     .shader = luminanceShader,
                     .meter = raceengine::AutoExposure{.compensation = 1.50f, .centreWeighting = 1.00f}}));
-    // 1.50, up from 0.75. The meter's own answer puts the frame's geometric mean at middle grey,
-    // and this frame's mean is a skyful of bright sky over a building in shadow — so the neutral
-    // answer is a correctly exposed sky and an unreadable building. Three quarters of a stop kept
-    // the drama and lost the detail; a stop and a half reads the shadowed facade at about 16/255
-    // instead of 3, at the cost of 1.7% of the frame clipping instead of 0.2%.
-    //
-    // Fully centre weighted, because the shot this scene is composed as is the one a flat average
-    // is worst at: an unlit face with the sky behind it, where the subject is a fifth of the frame
-    // and the thing setting the exposure is the other four fifths. Compensation and weighting are
-    // not the same dial — the compensation above says how far this whole scene sits from a
-    // photometric reading and is fixed, and the weighting says which part of the frame gets to
-    // decide, which is a different answer every time the camera turns.
-    //
-    // What it is worth here, measured rather than assumed, and the second number is the point:
-    // on the spawn view it opens up by a quarter of a stop (the shaded facade 11.6 → 16.7 of 255,
-    // clipping 8.2% → 11.0%, all of it sky), and on a view pitched up until that same unlit face
-    // stands against nothing but sky it opens by half a stop. Half a stop is what a centre-weighted
-    // average is worth and not a stop more: the sky is still most of the middle of that frame, and
-    // a geometric mean of a thousand-to-one range answers to how much of the frame a thing covers.
-    // Tightening the falloff towards a spot meter was tried and bought 0.08 of a stop on top, which
-    // is not worth the exposure pumping as the crosshair crosses a lit window. The lever that moves
-    // an unlit subject further than that is the compensation, and it is deliberately not this one.
 
     // Bloom, ahead of the tone map in the camera's chain for the same reason the meter is: what it
     // produces is consumed by the pass that follows it.
     //
-    // A threshold of 2.0 in exposed radiance is about eleven times middle grey: the sun, the neon
-    // and the specular off the car, and *not* the sky.
+    // A threshold of 2.0 in exposed radiance is about eleven times middle grey: the sun and the
+    // specular off the car, and *not* the sky.
     //
-    // It was 1.0, which is a little over three times middle grey and which the sky clears easily —
-    // so the largest bright thing in the frame was blooming onto itself. That is not what bloom is
-    // for. A spill says "this is brighter than the display can be" by putting light where the thing
-    // is not; a sky that spills over its own area is a haze, and it was pushing radiance that had
-    // gradient left in it up over the tone curve's ceiling, where it printed flat. Raising the
-    // threshold took the pinned fraction of the sky from 39% to 24% and doubled the output range it
-    // uses, at no cost at all to the shadowed facade — which is what says this was the right lever
-    // and the exposure was not. 3.0 keeps lowering the pinned fraction without recovering any more
-    // gradient, so the knee is here: past this it is only removing bloom.
-    //
-    // 0.30 is what the intensity settled at, and it stayed: with the sky no longer in the source
-    // the spill is the sun and the lights, which is the statement it was meant to be making.
+    // Thresholding happens in the *exposed* domain, which is what makes that number survive a change
+    // of scene at all — the meter moves the shutter under it and the amount of spill stays put. It
+    // was 1.0 on the apron, which the sky clears easily, so the largest bright thing in the frame
+    // was blooming onto itself; a spill says "brighter than the display can be" by putting light
+    // where the source is *not*, and a sky spilling over its own area is a haze.
     orThrow(engine.bloom().enable(
         camera, raceengine::CreateBloomDTO{
                     .downsampleShader = bloomDownsampleShader,
@@ -408,11 +400,17 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                                               .parameters = glm::vec4(0.004f, 1.0f, 0.0f, 0.0f),
                                               .lookupTable = grade});
 
-    // Four depth-only orthographic cameras appended to this scene, refitted to the camera's
-    // frustum every frame. 2048 square: at this camera's field of view the nearest cascade is then
-    // well under a world unit per texel, which is what makes a contact shadow read as an edge
-    // rather than a staircase. The distance is where the world stops being worth shadowing, and
-    // the caster extent is roughly how tall the building is, measured along the light.
+    // Four depth-only orthographic cameras appended to this scene, refitted to the camera's frustum
+    // every frame — so the cascades are spread over the *view* and not over the world, and a 6.2 km
+    // circuit costs them nothing that a 60 m apron did not.
+    //
+    // 2000 units is 200 m, which is what the distance has to be measured against here: the skybox
+    // follows the camera at 2500 units, so 250 m is as far as anything can be seen at all. Shadows
+    // therefore reach four fifths of the visible depth, and the band behind that draws unshadowed.
+    // Measured at this field of view and 2048 square, the cascade texel runs 39 mm at the near end
+    // to 306 mm at 200 m. The caster extent is 150 m along the light against a tallest local caster
+    // — the pit wall — of about 16 m, so it is generous rather than tight; it was sized for a
+    // building and there is nothing here that needs it.
     orThrow(engine.shadow().enable(scene, sun, camera,
                                    raceengine::CreateShadowCascadesDTO{.depthShader = depthShader,
                                                                        .resolution = 2048,
@@ -431,63 +429,70 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 
     this->sky = &skyEntity;
 
-    GroundPlane(engine, scene);
+    // The circuit itself, drawn from the model the collision mesh above was read out of. There is
+    // no position to state: the track carries its own world coordinates and `trackOrigin` is zero,
+    // so the only thing between the two is the tenth of a metre a world unit is. Anything else here
+    // and the surface being driven on would be somewhere the surface being drawn is not, which reads
+    // as the car floating or sinking rather than as a transform error.
+    auto& trackEntity = engine.scene().createEntity(
+        scene, CreateRenderableModelDTO{.node = engine.sceneManager().createNode(scene),
+                                        .shader = engine.shader().getShaderByName("pbr").value(),
+                                        .model = trackModel});
+
+    const auto placement = toWorldUnits(glm::dvec3(0.0));
+    engine.sceneManager().setPosition(trackEntity.node, static_cast<float>(placement.x),
+                                      static_cast<float>(placement.y), static_cast<float>(placement.z));
+    engine.sceneManager().setScale(trackEntity.node, static_cast<float>(worldUnitsPerMetre),
+                                   static_cast<float>(worldUnitsPerMetre), static_cast<float>(worldUnitsPerMetre));
+
+    // The 60 m ground plane that used to stand in for the world is gone. It was three times the
+    // width of the strip it covered and is now a twentieth of the length of the one the car can
+    // reach, so what it drew was an edge to drive off; and it would have had to be laid *on* the
+    // circuit, where two surfaces a few millimetres apart is a z-fight rather than a ground.
+
+    // The apron's building and its bollard, kept and not placed. They stand at the world origin,
+    // which on this circuit is six hundred metres from the grid across a gap in the ribbon — past
+    // the camera's five-hundred-metre far plane and well past the skybox — so nothing sees them from
+    // anywhere a car can reach. They are here because `scripts/smoke.sh` asserts that `test.glb` and
+    // `bollard.glb` are processed, and dropping them from the scene means changing the gate in the
+    // same commit.
     DinosaurEntity(engine, scene);
     Bollard(engine, scene);
 
     car.emplace(engine, scene);
 
-    // Ten metres along the track's centreline, which is fifty metres of flat tarmac short of the
-    // kerb band and is where the grid slot was chosen to put the car exactly where this scene has
-    // always had one. The height is asked of the ground rather than assumed to be zero, because
-    // the ground is a function and the answer is free.
-    player.emplace(engine, provingGround, car->sceneNode(),
-                   glm::dvec3(0.0, raceengine::sampleProvingGround(track, 0.0, 10.0).height, 10.0));
+    // The first authored grid slot, position and heading both. Not the AI line: its first point is a
+    // racing line a metre from the right-hand edge of an eleven-metre road, and its height is the
+    // recording car's own reference height rather than the tarmac — three quarters of a metre of
+    // thin air. A start box states a heading, which is the other thing an AI line cannot.
+    const auto& slot = gridSlots.front();
+    player.emplace(engine, track, car->sceneNode(), slot.position, glm::radians(slot.yaw));
 
-    // The image-based lighting graph. Three nodes, and the point of each is what it can see:
+    // The image-based lighting graph, and on an open circuit it is one node rather than three.
     //
-    // The global one stands high over the middle of the plaza with nothing near it, so what it
-    // records is very nearly the sky alone. It is the fallback every fragment outside the local
-    // volumes falls back on, and it is what keeps the open ground lit.
+    // The two local ones straddled the building: one stood in its shadow so that what it recorded
+    // *was* the wall rather than the sky, and the other covered the apron in front so a surface
+    // crossing out of the shadow crossed a band where both contributed. Neither has anything to
+    // stand for here. A circuit is open ground under open sky and its indirect light is the sky,
+    // the tarmac and the hillside — which is what one probe over the start line records.
     //
-    // The other two straddle the building. One sits in the shadow along its face, low and close,
-    // where more than half of what it can see *is* the building — so its irradiance is the dark,
-    // slightly warm bounce off a wall rather than the sky, and the specular chain it prefilters
-    // has the wall in it where the sky used to be. That is the whole fix for the highlight that
-    // used to survive the shadow: nothing subtracts it, the probe simply never recorded it.
-    //
-    // The third covers the open apron in front, overlapping the second, so a surface crossing out
-    // of the shadow crosses through a band where both contribute and neither switches on.
-    //
-    // Every probe stays well inside the 2500-unit skybox, which follows the camera: a probe
-    // captured from outside it would record the box's far wall instead of the sky.
+    // Where the local probes will come back is where a circuit genuinely occludes the sky: under
+    // the trees at the Dipper, in the cutting, and along the pit wall. That is a probe *per place*,
+    // and the constraint that decides how it has to be built is this: the skybox follows the camera
+    // at 2500 units, and a probe outside it records the box's far wall instead of the sky. Fixed
+    // probes 6 km apart cannot all be inside one 250 m box, so the answer is probes near the car
+    // rather than probes everywhere — a different feature from this one.
+    // Thirty metres over the pit straight and midway between the two gate cameras, ninety-odd metres
+    // from each — which is what the 250 m skybox allows and the reason it is not simply over the
+    // grid.
+    const auto overTheStraight = toWorldUnits(glm::dvec3(30.0, 65.0, -565.0));
     static_cast<void>(engine.lightProbe().createProbe(
         scene, raceengine::CreateLightProbeDTO{.name = "sky",
-                                               .position = glm::vec3(0.0f, 220.0f, -260.0f),
+                                               .position = glm::vec3(static_cast<float>(overTheStraight.x),
+                                                                     static_cast<float>(overTheStraight.y),
+                                                                     static_cast<float>(overTheStraight.z)),
                                                .global = true,
                                                .nearClippingPlane = 5.0f,
-                                               .farClippingPlane = 4000.0f}));
-
-    static_cast<void>(engine.lightProbe().createProbe(
-        scene, raceengine::CreateLightProbeDTO{.name = "building shadow",
-                                               .position = glm::vec3(0.0f, 45.0f, -120.0f),
-                                               // 200 wide, not 320: the shadow this probe stands
-                                               // for runs from about x = -180 to x = +150, and a
-                                               // box wider than that hands the dark environment it
-                                               // recorded to sunlit ground either side of the
-                                               // building. A probe's volume is a claim about where
-                                               // its photograph is a good answer.
-                                               .halfExtents = glm::vec3(200.0f, 90.0f, 70.0f),
-                                               .blendDistance = 35.0f,
-                                               .nearClippingPlane = 2.0f,
-                                               .farClippingPlane = 4000.0f}));
-
-    static_cast<void>(engine.lightProbe().createProbe(
-        scene, raceengine::CreateLightProbeDTO{.name = "open apron",
-                                               .position = glm::vec3(0.0f, 45.0f, -330.0f),
-                                               .halfExtents = glm::vec3(420.0f, 90.0f, 190.0f),
-                                               .blendDistance = 60.0f,
-                                               .nearClippingPlane = 2.0f,
                                                .farClippingPlane = 4000.0f}));
 
     // Registered last, once the level is fully built: the engine may call this the moment the

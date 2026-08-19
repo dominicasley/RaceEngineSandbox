@@ -9,21 +9,23 @@ namespace osr
 
 // Where the simulated world and the drawn one meet, stated once.
 //
-// Physics is SI and has an origin of its own: metres, +y up, +z forward, and the proving ground is
-// generated about x = 0 with z running forward from zero. The scene is a tenth of a metre to the
-// unit and was composed around a building years before there was a track to put under it. The
+// Physics is SI: metres, +y up, +z forward. The scene is a tenth of a metre to the unit. The
 // handedness already agrees, so nothing here is an axis remap — there is a scale, and there is
 // where the level decided to lay the track down.
 
 export inline constexpr double worldUnitsPerMetre = 10.0;
 
-// The proving ground's origin in world units. Chosen so the car's grid slot — ten metres along the
-// centreline, with fifty metres of flat tarmac still between it and the kerb band — lands exactly
-// where the car has always stood in this scene, which is what keeps the composition of the frame a
-// separate question from where the track is.
+// Zero, and that is now a decision rather than a default.
+//
+// The circuit is a real one and arrives in its own world coordinates — Bathurst spans 1.5 km by
+// 2.2 km about an origin its own author chose — so laying it down anywhere but where it says it is
+// would mean the renderer and the collision mesh, which come out of one file, agreeing only as long
+// as two constants agreed. The generated proving ground needed an offset because it was a strip
+// about x = 0 that had to be slid under a scene composed years earlier; a track that carries its own
+// coordinates needs the opposite. The scale below is the whole of the conversion.
 export [[nodiscard]] inline glm::dvec3 trackOrigin()
 {
-    return glm::dvec3(230.0, 0.0, -290.0);
+    return glm::dvec3(0.0, 0.0, 0.0);
 }
 
 export [[nodiscard]] inline glm::dvec3 toWorldUnits(const glm::dvec3& metres)

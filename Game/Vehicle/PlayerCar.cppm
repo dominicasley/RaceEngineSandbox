@@ -78,9 +78,12 @@ export class PlayerCar
 
 public:
     // `grid` is where the body frame's origin goes, in metres: the design contact patch under the
-    // wheelbase midpoint, so it is the point on the road the car is being stood on.
+    // wheelbase midpoint, so it is the point on the road the car is being stood on. `heading` is the
+    // right-handed rotation about +y that takes the body's +z onto the direction it faces, in
+    // radians — a grid slot states one and an AI line does not, which is most of why the slot is the
+    // spawn.
     PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, SceneNode& node,
-              const glm::dvec3& grid);
+              const glm::dvec3& grid, double heading);
 
     void update(float delta);
 
@@ -117,7 +120,7 @@ namespace osr
 {
 
 PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, SceneNode& node,
-                     const glm::dvec3& grid) :
+                     const glm::dvec3& grid, const double heading) :
     engine(engine),
     world(world),
     node(node),
@@ -140,6 +143,9 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld&
     // and the four unsprung masses on every tick. One inert tick asks it, and doubles as this
     // setup's first proof that it solves against this world at all rather than at the first frame
     // the driver sees.
+    const auto attitude = glm::angleAxis(heading, glm::dvec3(0.0, 1.0, 0.0));
+
+    state.chassis.orientation = attitude;
     state.chassis.position = grid + glm::dvec3(0.0, 1.0, 0.0);
     if (const auto probed = raceengine::stepVehicle(setup, state, {}, raceengine::noDriveTorque, world, 1e-6); !probed)
     {
@@ -149,7 +155,11 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld&
     const auto centreOfMass = state.chassis.centreOfMass;
 
     state = raceengine::VehicleState{};
-    state.chassis.position = grid + centreOfMass;
+    state.chassis.orientation = attitude;
+    // The centre of mass is a point in the *body* frame, so a car placed facing anywhere but along
+    // +z has to turn it before it can be subtracted: what is being pinned to the grid slot is the
+    // body's origin, and `position` is where its centre of mass has to be for that to be true.
+    state.chassis.position = grid + attitude * centreOfMass;
     lastRoadTorques = {};
 
     // A default-constructed driveline is a car with the key out. Turning it is a command and not an
