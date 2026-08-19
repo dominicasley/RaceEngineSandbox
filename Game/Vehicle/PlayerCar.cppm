@@ -22,21 +22,6 @@ import raceengine;
 namespace osr
 {
 
-// What the driver is asking for this tick, before any of it is shaped. It exists so that the two
-// sources of it — a keyboard and the gate's script — differ in data rather than in which code path
-// they take, which is the same reason `SteeringSettings` exists one stage further down.
-struct DriverDemand
-{
-    // The raw steering axis in [-1, 1]. A rack angle is what comes out of the controller below, not
-    // what goes into it.
-    double steering = 0.0;
-    double throttle = 0.0;
-    double brake = 0.0;
-    bool handbrake = false;
-    bool upshift = false;
-    bool downshift = false;
-};
-
 // The car the driver is in: the vehicle model, the driveline that turns a key into wheel torque,
 // and the scene node the whole of it is watched through.
 //
@@ -83,6 +68,14 @@ export class PlayerCar
     // transferable: applied here it would bury this one by 77 mm.
     static constexpr double modelOriginAhead = -0.1850;
 
+    // What this car's own rim turns, lock to lock, in degrees. The Mk7 GTI's progressive rack is
+    // 2.1 turns, which is what a device with more travel than that is geared against: a 900 degree
+    // wheel reaches this car's full lock at eighty-four percent of its own travel and the rest is
+    // past the stops, exactly as it would be in the car. It is stated here and not in the vehicle
+    // setup because it is a property of the steering box and the vehicle model carries a rack
+    // travel rather than a ratio.
+    static constexpr double steeringLockToLock = 756.0;
+
     raceengine::Engine& engine;
     const raceengine::PhysicsWorld& world;
     SceneNode& node;
@@ -99,6 +92,10 @@ export class PlayerCar
     std::array<double, raceengine::cornerCount> lastRoadTorques{};
 
     DriverChoice driver;
+    // Which of the three the controller above is presently shaped for. A wheel switched on halfway
+    // through a session is a change of source and not a change of car, so the shaping follows it
+    // and the rack does not move.
+    raceengine::InputSourceKind shapedFor = raceengine::InputSourceKind::None;
     std::int64_t ticks = 0;
 
     glm::dvec3 smoothedAcceleration{0.0};
@@ -141,7 +138,7 @@ public:
     }
 
 private:
-    [[nodiscard]] DriverDemand demand() const;
+    [[nodiscard]] raceengine::DriverInput demand();
     void writeNode() const;
 };
 
@@ -198,12 +195,18 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld&
     // input, which is why it is a call here rather than a field the tick reads.
     raceengine::startEngine(driveline, drivelineState);
 
+    // What the device is set to is the device's; what the car needs is the car's. Told here because
+    // this is the only thing that knows the steering box, and the mapping between the two is what
+    // stops a nine hundred degree wheel steering this car like a go-kart.
+    engine.input().setVehicleRotation(steeringLockToLock);
+
     writeNode();
 }
 
-// The keyboard, or the gate's standing start. Which one is a property of the run and is settled
-// before the first tick; what comes out of either is the same six numbers.
-DriverDemand PlayerCar::demand() const
+// Whoever is driving, or the gate's standing start. Which one is a property of the run and is
+// settled before the first tick; what comes out of either is the same struct, and the shaping stage
+// below is the only thing that ever learns which device answered.
+raceengine::DriverInput PlayerCar::demand()
 {
     if (driver == DriverChoice::Launch)
     {
@@ -212,18 +215,25 @@ DriverDemand PlayerCar::demand() const
         // curve away from idle, the clutch, the gearbox and final drive, the differential's split,
         // longitudinal slip at the driven wheels, the load transfer that squats the car, and then
         // the tyre's lateral model and the camera's lean against all of it.
-        return DriverDemand{.steering = ticks < launchSteerTick ? 0.0 : launchSteering,
-                            .throttle = ticks < launchTicks ? 1.0 : 0.0};
+        //
+        // It does not go through the input service on purpose: a scripted run must be a function of
+        // the tick count and of nothing else, and a device attached to the machine the gate happens
+        // to be running on is exactly the sort of thing that would put a different image on disk.
+        return raceengine::DriverInput{.steering = ticks < launchSteerTick ? 0.0 : launchSteering,
+                                       .throttle = ticks < launchTicks ? 1.0 : 0.0};
     }
 
-    const auto& window = engine.window();
+    const auto asked = engine.input().sample();
 
-    return DriverDemand{.steering = (window.keyPressed(Key::D) ? 1.0 : 0.0) - (window.keyPressed(Key::A) ? 1.0 : 0.0),
-                        .throttle = window.keyPressed(Key::W) ? 1.0 : 0.0,
-                        .brake = window.keyPressed(Key::S) ? 1.0 : 0.0,
-                        .handbrake = window.keyPressed(Key::Space),
-                        .upshift = window.keyPressed(Key::LeftShift),
-                        .downshift = window.keyPressed(Key::LeftControl)};
+    if (const auto kind = engine.input().activeKind(); kind != shapedFor)
+    {
+        steering.reconfigure(kind == raceengine::InputSourceKind::Wheel     ? wheelSteering()
+                             : kind == raceengine::InputSourceKind::Gamepad ? gamepadSteering()
+                                                                            : keyboardSteering());
+        shapedFor = kind;
+    }
+
+    return asked;
 }
 
 void PlayerCar::update(const float delta)

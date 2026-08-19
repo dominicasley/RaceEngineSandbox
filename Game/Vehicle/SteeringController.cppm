@@ -42,10 +42,25 @@ export [[nodiscard]] inline SteeringSettings keyboardSteering()
 // A wheel: no rate limit worth imposing and no range to take away, so this reduces to passing the
 // rim's own position through. Stated as settings rather than as a bypass so that the two inputs
 // differ in data and not in which code path they take.
+//
+// The rim's own travel against the car's is not this stage's business and is already done by the
+// time a demand arrives here — `rackFromRim` does it, against the range the device itself reports.
+// Doing it twice would be a wheel geared to a car geared to a wheel.
 export [[nodiscard]] inline SteeringSettings wheelSteering()
 {
     return SteeringSettings{
         .rateToLock = 1e9, .rateToCentre = 1e9, .fullRangeSpeed = 0.0, .narrowRangeSpeed = 0.0, .narrowRange = 1.0};
+}
+
+// A stick. It is a position rather than a rate like a key, so the rate limit is looser than the
+// keyboard's; the speed-sensitive range is the same problem and the same answer, because a thumb
+// reaching the stick's corner at motorway speed is asking for exactly what a key held down asks
+// for. Wider than the keyboard's narrow range because a stick can ask for half lock and a key
+// cannot.
+export [[nodiscard]] inline SteeringSettings gamepadSteering()
+{
+    return SteeringSettings{
+        .rateToLock = 4.0, .rateToCentre = 7.0, .fullRangeSpeed = 8.0, .narrowRangeSpeed = 45.0, .narrowRange = 0.45};
 }
 
 export class SteeringController
@@ -57,6 +72,14 @@ public:
     explicit SteeringController(const SteeringSettings settings = keyboardSteering()) :
         settings(settings)
     {
+    }
+
+    // A wheel switched on mid-session changes what the driver is holding but not where the rack is,
+    // so the rack is deliberately kept: reset to centre here and a car would snap straight the
+    // instant a device was plugged in.
+    void reconfigure(const SteeringSettings& next)
+    {
+        settings = next;
     }
 
     // How much of full lock is available at this speed. A wheel's settings collapse the two speeds
