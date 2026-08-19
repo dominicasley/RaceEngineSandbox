@@ -1,12 +1,11 @@
-#version 420 core
+#version 450
+// Vulkan fullscreen pass: a single oversized triangle from gl_VertexIndex; no vertex buffers.
 
-layout(location = 0) in vec2 vertexPositionModelspace;
-layout(location = 1) in vec2 vertexTextureCoordinates;
+layout(location = 0) out vec2 textureCoordinates;
 
-out vec2 textureCoordinates;
-
-void main ()
+void main()
 {
-    textureCoordinates = vertexTextureCoordinates;
-    gl_Position = vec4 (vertexPositionModelspace, 0.0, 1.0);
+    vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    textureCoordinates = uv;
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }

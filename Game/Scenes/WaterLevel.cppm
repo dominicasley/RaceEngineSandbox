@@ -67,7 +67,9 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
-    cameraController(engine)
+    // Yaw a little off the building's axis and pitch just above the horizon: the spawn view, and
+    // the one every capture is taken from, because the controller writes the direction each tick.
+    cameraController(engine, -2.356, 0.110)
 {
     // Directional, and its direction is the exact opposite of the position the shading reads as
     // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
@@ -79,43 +81,80 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
                             .direction = -glm::normalize(sunPosition),
                             .diffuse = glm::vec3(1.2859 * 2.5, 1.2973 * 2.5, 1.3 * 2.5),
                             .specular = glm::vec3(1.2859, 1.2973, 1.3),
-                            .ambient = glm::vec3(0.29859, 0.29973, 0.3),
+                            // Zero, and deliberately. Ambient used to be a floor under the diffuse
+                            // term — a flat grey added everywhere, which is what a scene says when
+                            // it has no indirect light and has to fake one. The light probes below
+                            // are the indirect light now, and a floor under them would put light
+                            // into exactly the shadowed places they were added to keep dark.
+                            .ambient = glm::vec3(0.0f),
                             .attenuation = 1.0f};
 
-    engine.camera().setPosition(camera, 0, 600, -450);
-    engine.camera().setRoll(camera, 0, 1, 0);
-    engine.camera().lookAtPoint(camera, 0, 0, 0);
+    // The scene's radiance is relative — a sun of 3.2 and an asphalt albedo of about 0.1 — so this
+    // is the number that turns it into a picture. It is no longer the last word on it: the camera
+    // meters the frame it drew and moves its own shutter (see below), and this is where that
+    // adaptation starts from and what it holds until the first reading comes back. Hand-tuned, and
+    // still the reference the meter is judged against: at one, which is what "no exposure" means,
+    // sunlit asphalt lands at a twentieth of the tone curve and every shadow crushes to black;
+    // past about five it blows out the sky.
+    engine.camera().setExposure(camera, 2.5f);
+    // How dark the dark parts of the picture are, which is a different question from how much light
+    // there is. The toe grips the bottom of the output range: 0.35 was the punchiest reading of a
+    // frame whose shadows were still meant to hold detail, and 0.12 opens them back up. Measured on
+    // this frame it moves the shadowed facade by about two values out of 255 — which is the useful
+    // finding, because it says the facade is not being *crushed* by the curve, there is simply
+    // almost no light on it. The lever that mattered was the compensation below.
+    //
+    // Contrast is 1.0, down from 1.1, and that is the whole of what was wrong with the sky. It
+    // multiplies log radiance about middle grey *before* the filmic curve, and Narkowicz's fit
+    // reaches exactly 1.0 at an input of 7.24 — so 1.1 dragged the print-white ceiling down from an
+    // exposed radiance of 7.24 to 5.17 and pinned everything above it at the same output value.
+    // Half the sky was landing there with no gradient left in it. At 1.0 that is 39% instead of 54%
+    // and the sky uses 24 values of output range instead of 17, and the shadowed facade came out
+    // *brighter* by a value rather than paying for it — because a contrast above one pushes away
+    // from the pivot in both directions, and the facade is a long way below it.
+    //
+    // The shoulder is not the lever it looks like: it is pow(mapped, 1 + shoulder * mapped), and
+    // pow(1, anything) is 1, so it darkens what is near white and cannot touch what is already at
+    // it. Measured, 0.30 bought the same sky as contrast 0.95 and cost two values off the facade.
+    engine.camera().setToneCurve(camera, ToneCurve{.contrast = 1.0f, .toe = 0.12f, .shoulder = 0.1f});
 
-    auto loaded =
-        awaitAll(engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/PbrFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/HdrVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/HdrFragmentShader.glsl"),
-                 engine.resource().loadModelAsync("assets/Models/SkyBox/SkyBox.glb"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/SkyboxVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/SkyboxFragmentShader.glsl"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/pz.hdr"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/nz.hdr"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/nx.hdr"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/px.hdr"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/py.hdr"),
-                 engine.resource().loadTextureAsync("assets/Textures/Skies/Field/ny.hdr"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PresentToScreenVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PresentToScreenFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PassThroughVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/PbrFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/DepthOnlyVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/DepthOnlyFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/ColourFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/HdrVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/HdrFragmentShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/SkyboxVertexShader.glsl"),
-                 engine.resource().loadTextFileAsync("assets/Shaders/vulkan/SkyboxFragmentShader.glsl"));
+    // Standing on the apron rather than looking down on it. The aerial view this spawned at framed
+    // the whole scene and showed almost nothing about how it is lit: the ground-to-wall crease, the
+    // recesses in the facade and the contact under the car are all where the indirect light does its
+    // work, and from six hundred units up they are a handful of pixels each. From here the crease
+    // runs across the frame and the bollard and the car are in it, which is what makes a capture
+    // worth comparing.
+    engine.camera().setPosition(camera, 270, 32, 250);
+    engine.camera().setRoll(camera, 0, 1, 0);
+    // Not lookAtPoint: FPSCameraController writes the direction on every tick, so the view it was
+    // constructed with is the spawn view and this call would be overwritten before the first frame.
+
+    auto loaded = awaitAll(engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/PbrFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/HdrVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/HdrFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/LuminanceFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/PrepassVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/PrepassFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/GtaoFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/AoBlurFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/BloomDownsampleFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/BloomUpsampleFragmentShader.glsl"),
+                           engine.resource().loadTextureAsync("assets/Luts/LUT_TealOrangeContrastTable.tga"),
+                           engine.resource().loadModelAsync("assets/Models/SkyBox/SkyBox.glb"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/SkyboxVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/SkyboxFragmentShader.glsl"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/pz.hdr"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/nz.hdr"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/nx.hdr"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/px.hdr"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/py.hdr"),
+                           engine.resource().loadTextureAsync("assets/Textures/Skies/Field/ny.hdr"));
 
     if (!loaded)
     {
@@ -123,51 +162,146 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     }
 
     auto [presentationVert, presentationFrag, vert, pbrFragmentShader, depthVertexShader, depthFragmentShader,
-          colourFragmentShader, hdrVertexShader, hdrFragmentShader, skyboxModel, skyboxVertexShader,
-          skyboxFragmentShader, front, back, left, right, top, bottom, vulkanPresentationVert, vulkanPresentationFrag,
-          vulkanVert, vulkanPbrFragmentShader, vulkanDepthVertexShader, vulkanDepthFragmentShader,
-          vulkanColourFragmentShader, vulkanHdrVertexShader, vulkanHdrFragmentShader, vulkanSkyboxVertexShader,
-          vulkanSkyboxFragmentShader] = std::move(loaded).value();
+          colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader, prepassVertexShader,
+          prepassFragmentShader, gtaoFragmentShader, aoBlurFragmentShader, bloomDownsampleFragmentShader,
+          bloomUpsampleFragmentShader, streetGrade, skyboxModel, skyboxVertexShader, skyboxFragmentShader, front, back, left, right,
+          top, bottom] = std::move(loaded).value();
 
     auto presentationShader = orThrow(engine.shader().createShader(
-        "present", ShaderDescriptor{.vertexShaderSource = presentationVert,
-                                    .fragmentShaderSource = presentationFrag,
-                                    .vulkanVertexShaderSource = vulkanPresentationVert,
-                                    .vulkanFragmentShaderSource = vulkanPresentationFrag}));
+        "present", ShaderDescriptor{.vertexShaderSource = presentationVert, .fragmentShaderSource = presentationFrag}));
 
-    orThrow(
-        engine.shader().createShader("pbr", ShaderDescriptor{.vertexShaderSource = vert,
-                                                             .fragmentShaderSource = pbrFragmentShader,
-                                                             .vulkanVertexShaderSource = vulkanVert,
-                                                             .vulkanFragmentShaderSource = vulkanPbrFragmentShader}));
+    orThrow(engine.shader().createShader(
+        "pbr", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = pbrFragmentShader}));
 
     // The cascades' depth pass. Position through the light's matrix, nothing written: the target
     // has no colour attachment for a fragment output to reach.
-    auto depthShader = orThrow(engine.shader().createShader(
-        "depth", ShaderDescriptor{.vertexShaderSource = depthVertexShader,
-                                  .fragmentShaderSource = depthFragmentShader,
-                                  .vulkanVertexShaderSource = vulkanDepthVertexShader,
-                                  .vulkanFragmentShaderSource = vulkanDepthFragmentShader}));
+    auto depthShader =
+        orThrow(engine.shader().createShader("depth", ShaderDescriptor{.vertexShaderSource = depthVertexShader,
+                                                                       .fragmentShaderSource = depthFragmentShader}));
 
-    orThrow(engine.shader().createShader("colour",
-                                         ShaderDescriptor{.vertexShaderSource = vert,
-                                                          .fragmentShaderSource = colourFragmentShader,
-                                                          .vulkanVertexShaderSource = vulkanVert,
-                                                          .vulkanFragmentShaderSource = vulkanColourFragmentShader}));
+    orThrow(engine.shader().createShader(
+        "colour", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = colourFragmentShader}));
 
-    auto skyboxShader = orThrow(engine.shader().createShader(
-        "skybox", ShaderDescriptor{.vertexShaderSource = skyboxVertexShader,
-                                   .fragmentShaderSource = skyboxFragmentShader,
-                                   .vulkanVertexShaderSource = vulkanSkyboxVertexShader,
-                                   .vulkanFragmentShaderSource = vulkanSkyboxFragmentShader}));
+    auto skyboxShader =
+        orThrow(engine.shader().createShader("skybox", ShaderDescriptor{.vertexShaderSource = skyboxVertexShader,
+                                                                        .fragmentShaderSource = skyboxFragmentShader}));
 
-    auto hdrShader = orThrow(
-        engine.shader().createShader("hdr", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
-                                                             .fragmentShaderSource = hdrFragmentShader,
-                                                             .vulkanVertexShaderSource = vulkanHdrVertexShader,
-                                                             .vulkanFragmentShaderSource = vulkanHdrFragmentShader}));
+    auto hdrShader = orThrow(engine.shader().createShader(
+        "hdr", ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = hdrFragmentShader}));
+
+    // The meter's reduction runs through the same fullscreen vertex stage the tone map does; what
+    // differs is entirely in the fragment stage, which is told which level of the chain it is.
+    auto luminanceShader = orThrow(engine.shader().createShader(
+        "luminance",
+        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = luminanceFragmentShader}));
+
+    // The occlusion prepass's pair, and the two fullscreen stages that turn what it draws into one
+    // visibility term per pixel. The prepass has a vertex stage of its own for the reason the
+    // cascades' depth pass does: it writes two varyings where the shading pair writes ten.
+    auto prepassShader = orThrow(engine.shader().createShader(
+        "occlusion prepass", ShaderDescriptor{.vertexShaderSource = prepassVertexShader,
+                                              .fragmentShaderSource = prepassFragmentShader}));
+
+    auto gtaoShader = orThrow(engine.shader().createShader(
+        "gtao", ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = gtaoFragmentShader}));
+
+    auto aoBlurShader = orThrow(engine.shader().createShader(
+        "ao blur",
+        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = aoBlurFragmentShader}));
+
+    // The bloom chain's two stages, both through the same fullscreen vertex stage as everything else
+    // in the post chain.
+    auto bloomDownsampleShader = orThrow(engine.shader().createShader(
+        "bloom downsample",
+        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = bloomDownsampleFragmentShader}));
+
+    auto bloomUpsampleShader = orThrow(engine.shader().createShader(
+        "bloom upsample",
+        ShaderDescriptor{.vertexShaderSource = hdrVertexShader, .fragmentShaderSource = bloomUpsampleFragmentShader}));
 
     scene.environment = orThrow(engine.cubeMap().create("sky", front, back, left, right, top, bottom));
+
+    // Ambient occlusion, which on this scene is the light the probes hand to a surface that cannot
+    // actually see the sky they photographed. A probe is one point and one box: it says how bright
+    // the world is near the building, and nothing in it knows that the ground in the angle between
+    // two walls sees a fifth of that. This is what knows.
+    //
+    // Forty units of radius against a building about six hundred across: contact darkening where the
+    // walls meet the apron and under the car, and not a general dimming of the scene. Strength 1.4 is
+    // the punchy reading of an integral that is already correct — the visibility term is what it is,
+    // and a power on it deepens the crease without touching the open ground.
+    orThrow(engine.ambientOcclusion().enable(
+        camera, raceengine::CreateAmbientOcclusionDTO{
+                    .prepassShader = prepassShader,
+                    .gatherShader = gtaoShader,
+                    .blurShader = aoBlurShader,
+                    .occlusion = raceengine::AmbientOcclusion{.strength = 1.4f, .radius = 40.0f}}));
+
+    // Auto exposure, ahead of the tone map in the camera's chain because what it measures is the
+    // radiance the tone map is about to consume.
+    //
+    // The dial is the level's because the exchange rate between this scene's relative radiance and
+    // a photometric meter's cd/m² is the level's: a sun of 3.2 is a number chosen here, and the
+    // meter's own reading of it — 0.081 average, exposure 1.28 — is not what this street is meant
+    // to look like. Three quarters of a stop up lands it at about 2.16, which is deliberately a
+    // fifth of a stop *under* the 2.5 set by hand above rather than on it. That direction is the
+    // whole point: the frame is a sunlit apron beside a building whose shadow the light probes
+    // exist to keep dark, its brightest pixel had about a third of a stop left before the clip, and
+    // the shoulder holding it back is only 0.10. Exposing for the highlight and letting the shadow
+    // fall is what keeps the roof off the clip and the shadow genuinely dark.
+    orThrow(engine.autoExposure().enable(
+        camera, raceengine::CreateAutoExposureDTO{
+                    .shader = luminanceShader,
+                    .meter = raceengine::AutoExposure{.compensation = 1.50f, .centreWeighting = 1.00f}}));
+    // 1.50, up from 0.75. The meter's own answer puts the frame's geometric mean at middle grey,
+    // and this frame's mean is a skyful of bright sky over a building in shadow — so the neutral
+    // answer is a correctly exposed sky and an unreadable building. Three quarters of a stop kept
+    // the drama and lost the detail; a stop and a half reads the shadowed facade at about 16/255
+    // instead of 3, at the cost of 1.7% of the frame clipping instead of 0.2%.
+    //
+    // Fully centre weighted, because the shot this scene is composed as is the one a flat average
+    // is worst at: an unlit face with the sky behind it, where the subject is a fifth of the frame
+    // and the thing setting the exposure is the other four fifths. Compensation and weighting are
+    // not the same dial — the compensation above says how far this whole scene sits from a
+    // photometric reading and is fixed, and the weighting says which part of the frame gets to
+    // decide, which is a different answer every time the camera turns.
+    //
+    // What it is worth here, measured rather than assumed, and the second number is the point:
+    // on the spawn view it opens up by a quarter of a stop (the shaded facade 11.6 → 16.7 of 255,
+    // clipping 8.2% → 11.0%, all of it sky), and on a view pitched up until that same unlit face
+    // stands against nothing but sky it opens by half a stop. Half a stop is what a centre-weighted
+    // average is worth and not a stop more: the sky is still most of the middle of that frame, and
+    // a geometric mean of a thousand-to-one range answers to how much of the frame a thing covers.
+    // Tightening the falloff towards a spot meter was tried and bought 0.08 of a stop on top, which
+    // is not worth the exposure pumping as the crosshair crosses a lit window. The lever that moves
+    // an unlit subject further than that is the compensation, and it is deliberately not this one.
+
+    // Bloom, ahead of the tone map in the camera's chain for the same reason the meter is: what it
+    // produces is consumed by the pass that follows it.
+    //
+    // A threshold of 2.0 in exposed radiance is about eleven times middle grey: the sun, the neon
+    // and the specular off the car, and *not* the sky.
+    //
+    // It was 1.0, which is a little over three times middle grey and which the sky clears easily —
+    // so the largest bright thing in the frame was blooming onto itself. That is not what bloom is
+    // for. A spill says "this is brighter than the display can be" by putting light where the thing
+    // is not; a sky that spills over its own area is a haze, and it was pushing radiance that had
+    // gradient left in it up over the tone curve's ceiling, where it printed flat. Raising the
+    // threshold took the pinned fraction of the sky from 39% to 24% and doubled the output range it
+    // uses, at no cost at all to the shadowed facade — which is what says this was the right lever
+    // and the exposure was not. 3.0 keeps lowering the pinned fraction without recovering any more
+    // gradient, so the knee is here: past this it is only removing bloom.
+    //
+    // 0.30 is what the intensity settled at, and it stayed: with the sky no longer in the source
+    // the spill is the sun and the lights, which is the statement it was meant to be making.
+    orThrow(engine.bloom().enable(camera, raceengine::CreateBloomDTO{
+                                              .downsampleShader = bloomDownsampleShader,
+                                              .upsampleShader = bloomUpsampleShader,
+                                              .bloom = raceengine::Bloom{.threshold = 2.0f,
+                                                                         .knee = 0.6f,
+                                                                         .intensity = 0.30f,
+                                                                         .maximum = 20.0f,
+                                                                         .spread = 2.2f}}));
 
     auto hdr = orThrow(engine.postProcess().create("hdr", hdrShader));
 
@@ -176,6 +310,11 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
         engine.postProcess().addInput(hdr, attachment);
     }
 
+    // The third input, after the camera's colour and depth: the top of the bloom chain, which the
+    // tone map adds in after exposure and before the curve.
+    engine.postProcess().addInput(hdr, camera.bloom.result);
+    engine.postProcess().setParameters(hdr, glm::vec4(camera.bloom.intensity, 0.0f, 0.0f, 0.0f));
+
     engine.camera().addPostProcess(camera, hdr);
 
     auto hdrPostProcess = engine.memoryStorage().postProcesses.get(hdr);
@@ -183,7 +322,24 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     auto outputAttachment = engine.fbo().getAttachmentsOfType(
         engine.memoryStorage().frameBuffers.get(hdrPostProcess.output.value()), FboAttachmentType::Color);
 
-    engine.presenter().setPresenter(Presenter{.output = outputAttachment.front(), .shader = presentationShader});
+    // The lens and the grade. The lens is geometry and stays a number: the aberration is in
+    // *texture* coordinates, so it is a fraction of the screen and not of a pixel — 0.004 is about
+    // three pixels of separation in the corner of a 1920-wide frame and none at all in the middle.
+    //
+    // The grade is a file, and swapping that file swaps the look: no rebuild, no engine change, and
+    // the same table the colourist was looking at when they saved it. Two formats are read — a
+    // `.cube` from a grading tool, and the N-slices-of-N-squared strip the Unreal ecosystem has
+    // published for a decade, which is what this one is.
+    //
+    // `assets/Luts/street.cube` beside it is the look this shader used to hold as constants, baked
+    // by scripts/bake-grade.py; `scripts/grade-contact-sheet.py` puts every grade in the folder on
+    // one ungraded plate so a look can be chosen by looking rather than by rebuilding.
+    auto grade = orThrow(engine.colourGrade().loadStrip("teal and orange", streetGrade));
+
+    engine.presenter().setPresenter(Presenter{.output = outputAttachment.front(),
+                                              .shader = presentationShader,
+                                              .parameters = glm::vec4(0.004f, 1.0f, 0.0f, 0.0f),
+                                              .lookupTable = grade});
 
     // Four depth-only orthographic cameras appended to this scene, refitted to the camera's
     // frustum every frame. 2048 square: at this camera's field of view the nearest cascade is then
@@ -212,6 +368,52 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     DinosaurEntity(engine, scene);
     CarEntity(engine, scene);
     Bollard(engine, scene);
+
+    // The image-based lighting graph. Three nodes, and the point of each is what it can see:
+    //
+    // The global one stands high over the middle of the plaza with nothing near it, so what it
+    // records is very nearly the sky alone. It is the fallback every fragment outside the local
+    // volumes falls back on, and it is what keeps the open ground lit.
+    //
+    // The other two straddle the building. One sits in the shadow along its face, low and close,
+    // where more than half of what it can see *is* the building — so its irradiance is the dark,
+    // slightly warm bounce off a wall rather than the sky, and the specular chain it prefilters
+    // has the wall in it where the sky used to be. That is the whole fix for the highlight that
+    // used to survive the shadow: nothing subtracts it, the probe simply never recorded it.
+    //
+    // The third covers the open apron in front, overlapping the second, so a surface crossing out
+    // of the shadow crosses through a band where both contribute and neither switches on.
+    //
+    // Every probe stays well inside the 2500-unit skybox, which follows the camera: a probe
+    // captured from outside it would record the box's far wall instead of the sky.
+    static_cast<void>(engine.lightProbe().createProbe(
+        scene, raceengine::CreateLightProbeDTO{.name = "sky",
+                                               .position = glm::vec3(0.0f, 220.0f, -260.0f),
+                                               .global = true,
+                                               .nearClippingPlane = 5.0f,
+                                               .farClippingPlane = 4000.0f}));
+
+    static_cast<void>(engine.lightProbe().createProbe(
+        scene, raceengine::CreateLightProbeDTO{.name = "building shadow",
+                                               .position = glm::vec3(0.0f, 45.0f, -120.0f),
+                                               // 200 wide, not 320: the shadow this probe stands
+                                               // for runs from about x = -180 to x = +150, and a
+                                               // box wider than that hands the dark environment it
+                                               // recorded to sunlit ground either side of the
+                                               // building. A probe's volume is a claim about where
+                                               // its photograph is a good answer.
+                                               .halfExtents = glm::vec3(200.0f, 90.0f, 70.0f),
+                                               .blendDistance = 35.0f,
+                                               .nearClippingPlane = 2.0f,
+                                               .farClippingPlane = 4000.0f}));
+
+    static_cast<void>(engine.lightProbe().createProbe(
+        scene, raceengine::CreateLightProbeDTO{.name = "open apron",
+                                               .position = glm::vec3(0.0f, 45.0f, -330.0f),
+                                               .halfExtents = glm::vec3(420.0f, 90.0f, 190.0f),
+                                               .blendDistance = 60.0f,
+                                               .nearClippingPlane = 2.0f,
+                                               .farClippingPlane = 4000.0f}));
 
     // Registered last, once the level is fully built: the engine may call this the moment the
     // first tick runs, and a half-constructed level is not something it should be handed.

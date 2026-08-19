@@ -1,4 +1,4 @@
-#version 420 core
+#version 450
 
 #define PI 3.141592
 #define iSteps 16
@@ -6,7 +6,53 @@
 
 layout(location = 0) out vec4 fragColor;
 
-in vec3 textureCoordinates;
+layout(location = 0) in vec3 textureCoordinates;
+
+struct Light {
+    vec4 position;             // xyz the direction *towards* the light
+    vec4 diffuse;
+    vec4 specular;
+    vec4 ambientAttenuation;
+};
+
+// A prefix of the frame block: everything up to the field this shader reads, laid out as the ABI
+// states it. What it needs is which light casts the cascades and where that light is, because the
+// sun in the sky and the sun the world is lit by have to be the same sun — they were not, and the
+// scene rendered a dusk sky over midday lighting.
+//
+// This is also what makes a light probe's "captured at runtime to follow the time of day" mean
+// anything: move the light and the sky moves with it, so a re-captured probe records a genuinely
+// different environment rather than the same one under a different direct term.
+layout(set = SET_FRAME, binding = 0) uniform FrameData {
+    mat4 viewMatrix;
+    vec4 cameraPosition;
+    ivec4 lightCount;
+    Light lights[MAX_LIGHTS];
+    mat4 shadowMatrices[SHADOW_CASCADES];
+    vec4 shadowSplits;
+    vec4 shadowTexelWorldSize;
+    vec4 shadowDepthScale;
+    ivec4 shadowParams;
+} frame;
+
+// The sun as it is actually seen: a disc a little over half a degree across, darkening towards its
+// edge, subtending the solid angle that turns the scene light's irradiance into a radiance.
+const float sunAngularRadius = 0.00465;   // radians; 0.266 degrees
+const float sunSolidAngle = 6.794e-5;     // steradians; 2*pi*(1 - cos(radius))
+const float sunLimbDarkening = 0.6;
+// The aureole: the bright ring of forward-scattered light immediately around the disc, which is a
+// real and very steep feature of a hazy sky and which the sixteen-step integral above cannot
+// resolve — its Mie term is a glow tens of degrees wide. Stated as a fraction of the disc's own
+// radiance at the disc's edge, falling as the inverse square of the angle from there, so it is a
+// hundredth of that a decade out and gone into the sky by five degrees.
+//
+// It is also what stops the sun reading as a *square*. Bloom is the only thing spreading a disc
+// twelve pixels across, its chain starts at half resolution, and a point source that lives in one
+// level of a chain comes back out shaped like that level's kernel. The aureole gives the spill a
+// radial, resolution-independent core to start from and leaves bloom the wide halo it is good at.
+const float sunAureoleAtEdge = 0.02;
+// Half floats stop at 65504 and the bloom chain has to sum this without reaching there.
+const float sunMaximumRadiance = 4000.0;
 
 vec2 rsi(vec3 r0, vec3 rd, float sr) {
     // ray-sphere intersection that assumes
@@ -114,10 +160,19 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
 
 void main()
 {
+    // The ray is the skybox cube's own model-space position, and nothing rotates that node, so it
+    // is already the world direction this fragment looks along. It used to have its y negated,
+    // which rendered the whole atmosphere upside down: the scattering model's "up" is +y, so a
+    // flipped ray put the horizon glow below the horizon and left no sun direction that could
+    // light the sky and agree with the scene's sun at the same time. Unflipped, the two are the
+    // same vector and the sky follows the light.
+    int shadowLight = clamp(frame.shadowParams.y, 0, MAX_LIGHTS - 1);
+    vec3 sunDirection = normalize(frame.lights[shadowLight].position.xyz);
+
     vec3 color = atmosphere(
-        normalize(vec3(textureCoordinates.x, textureCoordinates.y * -1.0f, textureCoordinates.z)),  // normalized ray direction
+        normalize(textureCoordinates),  // normalized ray direction
         vec3(0, 6372e3, 0),             // ray origin
-        vec3(0, 0.5, 1),                // position of the sun
+        sunDirection,                   // position of the sun
         22.0,                           // intensity of the sun
         6371e3,                         // radius of the planet in meters
         6471e3,                         // radius of the atmosphere in meters
@@ -128,8 +183,57 @@ void main()
         0.758                           // Mie preferred scattering direction
     );
 
-    // Apply exposure.
-    color = 1.0 - exp(-1.0 * color);
+    // The solar disc, which the scattering integral above does not draw: what it produces around
+    // the sun is the *glow*, the Mie phase function peaking as the ray turns towards it, and the
+    // disc itself is a hole in that model. Without one there is nothing in the sky brighter than
+    // the sky, which is what makes a bright afternoon read as an overcast one.
+    //
+    // Its radiance is the one the scene's own sun implies rather than a number chosen to look
+    // right: a directional light of irradiance E arriving from a disc of solid angle
+    // `sunSolidAngle` is a disc of radiance E / solid angle, so the sun you see and the sun the
+    // world is lit by are the same sun stated twice. Capped, because the frame is stored in half
+    // floats and the physical figure has four more digits than that leaves room for; what the cap
+    // costs is the ratio between the disc and the sky, which no display can show anyway.
+    vec3 ray = normalize(textureCoordinates);
+    float angle = acos(clamp(dot(ray, sunDirection), -1.0, 1.0));
 
+    vec3 sunRadiance = min(frame.lights[shadowLight].diffuse.rgb / sunSolidAngle, vec3(sunMaximumRadiance));
+
+    // The one view the disc must not appear in. A light probe records the world so that a surface
+    // can be given the light it cannot see directly; the sun is not that light, it is the direct
+    // term, and a disc in the cube would deliver it a second time — about 9% of the sun's
+    // irradiance in the mean, and anywhere between none of it and three times that in a given
+    // capture, since the disc is smaller than one texel of a 128-pixel face. The aureole stays:
+    // it is scattered light, which is exactly what a probe is for.
+    const bool probeCapture = frame.shadowParams.z != 0;
+
+    if (angle >= sunAngularRadius)
+    {
+        const float falloff = sunAngularRadius / angle;
+
+        color += sunRadiance * sunAureoleAtEdge * falloff * falloff;
+    }
+    else if (probeCapture)
+    {
+        // Continued flat across the disc at its edge value rather than left as a hole, so that
+        // nothing in the cube depends on where the sun fell in the texel grid.
+        color += sunRadiance * sunAureoleAtEdge;
+    }
+    else
+    {
+        // Limb darkening: the disc is not uniform, because a ray leaving its edge travels further
+        // through the photosphere than one leaving its centre. The edge lands about a third down,
+        // which is what stops the disc reading as a sticker.
+        float edge = angle / sunAngularRadius;
+        float limb = 1.0 - sunLimbDarkening * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));
+
+        color += sunRadiance * limb;
+    }
+
+    // No tone map here. This shader used to end with `1 - exp(-color)`, which is a display transfer
+    // applied inside the sky: it clamped the whole atmosphere to one, so the sun's peak, the
+    // horizon and a mid-sky blue all arrived at the post chain within a factor of two of each
+    // other. Everything downstream — the exposure meter, the bloom threshold, the light probes —
+    // reads scene-referred radiance, and the sky is the brightest thing in the scene.
     fragColor = vec4(color, 1.0f);
 }
