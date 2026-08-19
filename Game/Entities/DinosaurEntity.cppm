@@ -58,11 +58,14 @@ public:
 
         const auto model = std::move(loaded).value();
 
-        const auto drawableComponent = engine.entity().addComponent<Drawable>(
-            entity,
-            engine.scene().createEntity(
-                scene, CreateRenderableModelDTO{
-                           .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
+        auto& renderable = engine.scene().createEntity(
+            scene, CreateRenderableModelDTO{
+                       .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model});
+
+        // Animated, so it is not part of the world a probe records — see CarEntity.
+        renderable.staticGeometry = false;
+
+        const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, renderable);
 
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }

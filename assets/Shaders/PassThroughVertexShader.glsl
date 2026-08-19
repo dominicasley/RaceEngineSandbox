@@ -1,6 +1,8 @@
-#version 420
-// MAX_JOINTS, MAX_LIGHTS and every ATTRIBUTE_* location are defined by the renderer from
-// Graphics/Api/RenderContract.cppm; this file must not spell one of those numbers.
+#version 450
+// Vulkan variant of PassThroughVertexShader.glsl. Y-flip is handled by the renderer's
+// negative viewport; localToScreen arrives pre-multiplied with the depth-range correction.
+// MAX_JOINTS, MAX_LIGHTS, SET_* and the ATTRIBUTE_* locations are defined by the renderer
+// from Graphics/Api/RenderContract.cppm; this file must not spell one of those numbers.
 
 layout(location = ATTRIBUTE_POSITION) in vec3 vertexPositionModelSpace;
 layout(location = ATTRIBUTE_TEXCOORD) in vec2 vertexTextureCoordinates;
@@ -9,70 +11,100 @@ layout(location = ATTRIBUTE_TANGENT) in vec4 vertexTangentModelSpace;
 layout(location = ATTRIBUTE_JOINT) in vec4 vertexJointIndicies;
 layout(location = ATTRIBUTE_WEIGHT) in vec4 vertexJointWeights;
 
-uniform bool animated;
-uniform mat4 localToScreen4x4Matrix;
-uniform mat4 localToView4x4Matrix;
-uniform mat4 localToWorld4x4Matrix;
-uniform mat3 modelView3x3Matrix;
-uniform mat3 normalMatrix;
-uniform mat4 jointTransformationMatrixes[MAX_JOINTS];
-
-struct light {
-	vec3 position;
-	vec3 diffuse;
-	vec3 specular;
-	vec3 ambient;
-	float attenuation;
+// Set 0: per camera pass. Set 1: per material. Set 2: per draw (dynamic offset).
+struct Light {
+    vec4 position;             // xyz position
+    vec4 diffuse;
+    vec4 specular;
+    vec4 ambientAttenuation;   // xyz ambient, w attenuation
 };
 
-uniform light lights[MAX_LIGHTS];
-uniform int lightCount;
+// Declared for the same reason the shadow tail is: this stage reads none of it, and the block has
+// one std140 layout that both stages have to agree on. Read where it is used (PbrFragmentShader).
+struct Probe {
+    vec4 irradiance[SH_COEFFICIENTS];
+    vec4 boxMin;
+    vec4 boxMax;
+    vec4 position;
+};
 
-out vec2 textureCoordinates;
-out vec3 positionInWorldSpace;
-out vec3 positionInViewSpace;
-out vec3 normalsInNormalSpace;
-out vec3 tangentInNormalSpace;
-out vec3 bitangentInNormalSpace;
-out vec3 normalsInWorldSpace;
-out vec3 viewDirectionWorldSpace;
-// One direction per declared light; elements at or past lightCount are never read.
-out vec3 lightDirectionWorldSpace[MAX_LIGHTS];
+// Declared whole even though this stage reads only the first three members: it is one block with
+// one std140 layout, and a stage that declared a prefix of it would be a second statement of the
+// ABI to keep in step. The shadow tail is documented where it is read (PbrFragmentShader).
+layout(set = SET_FRAME, binding = 0) uniform FrameData {
+    mat4 viewMatrix;
+    vec4 cameraPosition;
+    ivec4 lightCount;          // x = lights in use, never above MAX_LIGHTS
+    Light lights[MAX_LIGHTS];
+    mat4 shadowMatrices[SHADOW_CASCADES];
+    vec4 shadowSplits;
+    vec4 shadowTexelWorldSize;
+    vec4 shadowDepthScale;
+    ivec4 shadowParams;
+    ivec4 probeParams;
+    Probe probes[MAX_IBL_PROBES];
+} frame;
+
+layout(set = SET_DRAW, binding = 0) uniform DrawData {
+    mat4 localToWorld;
+    mat4 localToView;
+    mat4 localToScreen; // clip-corrected for Vulkan depth 0..1 by the renderer
+    mat4 normalMatrix;  // upper 3x3 meaningful
+    ivec4 animated;     // x != 0 when skinned
+    mat4 jointTransforms[MAX_JOINTS];
+} draw;
+
+layout(location = 0) out vec2 textureCoordinates;
+layout(location = 1) out vec3 positionInWorldSpace;
+layout(location = 2) out vec3 positionInViewSpace;
+layout(location = 3) out vec3 normalsInNormalSpace;
+layout(location = 4) out vec3 tangentInNormalSpace;
+layout(location = 5) out vec3 bitangentInNormalSpace;
+layout(location = 6) out vec3 normalsInWorldSpace;
+layout(location = 7) out vec3 viewDirectionWorldSpace;
+// One direction per declared light, locations 8..8+MAX_LIGHTS-1; elements at or past
+// lightCount are never read.
+layout(location = 8) out vec3 lightDirectionWorldSpace[MAX_LIGHTS];
+// tangentBinormalNormalMatrix stays local: no fragment stage reads it, and an output no
+// fragment shader consumes is a stage-interface mismatch once SPIR-V is optimized.
 
 void main()
 {
-	mat4 boneTransform = mat4(1.0f);
-	vec4 jointWeights = vertexJointWeights;
+    mat4 boneTransform = mat4(1.0f);
+    vec4 jointWeights = vertexJointWeights;
 
-	if (animated) {
-		boneTransform = jointWeights.x * jointTransformationMatrixes[int(vertexJointIndicies.x)] +
-		jointWeights.y * jointTransformationMatrixes[int(vertexJointIndicies.y)] +
-		jointWeights.z * jointTransformationMatrixes[int(vertexJointIndicies.z)] +
-		jointWeights.w * jointTransformationMatrixes[int(vertexJointIndicies.w)];
-	}
+    if (draw.animated.x != 0) {
+        boneTransform = jointWeights.x * draw.jointTransforms[int(vertexJointIndicies.x)] +
+        jointWeights.y * draw.jointTransforms[int(vertexJointIndicies.y)] +
+        jointWeights.z * draw.jointTransforms[int(vertexJointIndicies.z)] +
+        jointWeights.w * draw.jointTransforms[int(vertexJointIndicies.w)];
+    }
 
-	textureCoordinates = vertexTextureCoordinates;
-	positionInWorldSpace = vec3(localToWorld4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0));
-	positionInViewSpace = vec3(localToView4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0));
+    mat3 normalMatrix3 = mat3(draw.normalMatrix);
+    mat3 modelView3x3Matrix = mat3(frame.viewMatrix);
 
-	vec3 bitangent = cross(vertexNormalModelSpace, vertexTangentModelSpace.xyz ) * vertexTangentModelSpace.w;
+    textureCoordinates = vertexTextureCoordinates;
+    positionInWorldSpace = vec3(draw.localToWorld * boneTransform * vec4(vertexPositionModelSpace, 1.0));
+    positionInViewSpace = vec3(draw.localToView * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 
-	normalsInWorldSpace = normalize(localToWorld4x4Matrix * boneTransform * vec4(vertexNormalModelSpace.xyz, 0.0)).xyz;
-	normalsInNormalSpace = normalize(normalMatrix * mat3(boneTransform) * vertexNormalModelSpace);
-	tangentInNormalSpace = normalize(normalMatrix * mat3(boneTransform) * vec3(vertexTangentModelSpace));
-	bitangentInNormalSpace = normalize(normalMatrix * mat3(boneTransform) * bitangent);
+    vec3 bitangent = cross(vertexNormalModelSpace, vertexTangentModelSpace.xyz) * vertexTangentModelSpace.w;
 
-	mat3 tangentBinormalNormalMatrix = mat3(
-		tangentInNormalSpace.x, bitangentInNormalSpace.x, normalsInNormalSpace.x,
-		tangentInNormalSpace.y, bitangentInNormalSpace.y, normalsInNormalSpace.y,
-		tangentInNormalSpace.z, bitangentInNormalSpace.z, normalsInNormalSpace.z
-	);
+    normalsInWorldSpace = normalize(draw.localToWorld * boneTransform * vec4(vertexNormalModelSpace.xyz, 0.0)).xyz;
+    normalsInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * vertexNormalModelSpace);
+    tangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * vec3(vertexTangentModelSpace));
+    bitangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * bitangent);
 
-	for (int lightIndex = 0; lightIndex < lightCount; lightIndex++) {
-		lightDirectionWorldSpace[lightIndex] = tangentBinormalNormalMatrix * (modelView3x3Matrix * lights[lightIndex].position);
-	}
+    mat3 tangentBinormalNormalMatrix = mat3(
+        tangentInNormalSpace.x, bitangentInNormalSpace.x, normalsInNormalSpace.x,
+        tangentInNormalSpace.y, bitangentInNormalSpace.y, normalsInNormalSpace.y,
+        tangentInNormalSpace.z, bitangentInNormalSpace.z, normalsInNormalSpace.z
+    );
 
-	viewDirectionWorldSpace	= tangentBinormalNormalMatrix * -positionInViewSpace;
+    for (int lightIndex = 0; lightIndex < frame.lightCount.x; lightIndex++) {
+        lightDirectionWorldSpace[lightIndex] = tangentBinormalNormalMatrix * (modelView3x3Matrix * frame.lights[lightIndex].position.xyz);
+    }
 
-	gl_Position	= localToScreen4x4Matrix * boneTransform * vec4(vertexPositionModelSpace, 1.0);
+    viewDirectionWorldSpace = tangentBinormalNormalMatrix * -positionInViewSpace;
+
+    gl_Position = draw.localToScreen * boneTransform * vec4(vertexPositionModelSpace, 1.0);
 }

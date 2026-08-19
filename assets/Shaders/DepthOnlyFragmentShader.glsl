@@ -1,7 +1,7 @@
-#version 420 core
-// Deliberately empty. A cascade's framebuffer has no colour attachment — GL sets its draw and read
-// buffers to GL_NONE — so a fragment output here would have nowhere to go; the only thing this
-// stage produces is the depth the rasteriser already computed.
+#version 450
+// Deliberately empty, and deliberately declaring no output: a cascade's VkRenderingInfo records
+// colorAttachmentCount 0 and the pipeline is built with no colour blend attachment, so a location
+// written here would have no attachment to be written to.
 
 void main()
 {
