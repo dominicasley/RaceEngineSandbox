@@ -42,17 +42,9 @@ public:
 
         const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, renderable);
 
-        // Out in the sun, past the side of the building.
-        //
-        // The sun is at 45 degrees along +Z, so the building throws its shadow straight back along
-        // -Z and the shadow is as wide as the building is: measured off the frame, x from about
-        // -180 to +150, reaching to roughly z = -330. This sits clear of that on the sunlit side and
-        // still well inside the ground plane, which narrows towards the camera.
-        //
-        // It is worth having one lit thing standing next to the shadow: the car takes direct sun
-        // and a sky-lit indirect term while the ground a few metres away takes only the second,
-        // which is the whole of what the probes changed, in one frame.
-        engine.sceneManager().setPosition(node, 230.0f, 0.0f, -190.0f);
+        // Where it stands is not this entity's: on the circuit the vehicle model writes the node
+        // from the first tick, and on the apron the scene places it. Stating a position here would
+        // be a third answer that one of them overwrites.
 
         // A world unit is a tenth of a metre here — the bollard is a metre tall at its scale of 10
         // and the camera stands at 32 — and this glTF is authored in *metres*: 2.05 x 1.48 x 4.31,
@@ -63,9 +55,8 @@ public:
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 
-    // The node this car is drawn through, so that something else can drive it. The position set
-    // above is the grid slot and nothing more: from the first tick it is written by the vehicle
-    // model, and the scale and the entity's own flags stay this entity's.
+    // The node this car is drawn through, so that something else can place or drive it. The scale
+    // and the entity's own flags stay this entity's.
     [[nodiscard]] SceneNode& sceneNode() const
     {
         return node;

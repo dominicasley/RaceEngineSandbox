@@ -13,6 +13,7 @@ module;
 
 export module osr.game:PlayerCar;
 
+import :Options;
 import :SteeringController;
 import :TrackFrame;
 
@@ -20,6 +21,21 @@ import raceengine;
 
 namespace osr
 {
+
+// What the driver is asking for this tick, before any of it is shaped. It exists so that the two
+// sources of it — a keyboard and the gate's script — differ in data rather than in which code path
+// they take, which is the same reason `SteeringSettings` exists one stage further down.
+struct DriverDemand
+{
+    // The raw steering axis in [-1, 1]. A rack angle is what comes out of the controller below, not
+    // what goes into it.
+    double steering = 0.0;
+    double throttle = 0.0;
+    double brake = 0.0;
+    bool handbrake = false;
+    bool upshift = false;
+    bool downshift = false;
+};
 
 // The car the driver is in: the vehicle model, the driveline that turns a key into wheel torque,
 // and the scene node the whole of it is watched through.
@@ -47,6 +63,17 @@ export class PlayerCar
     // camera hung straight off that shakes; what a driver feels is the part of it that lasts.
     static constexpr double accelerationSmoothing = 0.16;
 
+    // The gate's standing start, in ticks of the engine's fixed 120 Hz step.
+    //
+    // Ticks and not seconds, because under `RACEENGINE_DUMP_FRAME` the tick count is a function of
+    // the frame number: the captured frame lands on the same simulated instant on any machine, and
+    // a script keyed to the wall clock would not. It runs long enough past the captured frame that
+    // no edge of it can land on that frame — the pedal comes up a full second after the shutter.
+    static constexpr std::int64_t launchTicks = 240;
+    // Half a second in, so the launch and the first steering input are separable in the picture.
+    static constexpr std::int64_t launchSteerTick = 60;
+    static constexpr double launchSteering = 0.35;
+
     // Where golf_gti_2018.glb's own origin sits in the chassis body frame, in metres.
     //
     // Measured off the asset rather than carried over from the car's data: its wheel centres are at
@@ -71,6 +98,9 @@ export class PlayerCar
     // than computed twice — one substep of lag at 360 Hz.
     std::array<double, raceengine::cornerCount> lastRoadTorques{};
 
+    DriverChoice driver;
+    std::int64_t ticks = 0;
+
     glm::dvec3 smoothedAcceleration{0.0};
     std::int32_t gear = 1;
     bool upshiftHeld = false;
@@ -83,7 +113,7 @@ public:
     // radians — a grid slot states one and an AI line does not, which is most of why the slot is the
     // spawn.
     PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, SceneNode& node,
-              const glm::dvec3& grid, double heading);
+              const glm::dvec3& grid, double heading, DriverChoice driver);
 
     void update(float delta);
 
@@ -111,6 +141,7 @@ public:
     }
 
 private:
+    [[nodiscard]] DriverDemand demand() const;
     void writeNode() const;
 };
 
@@ -120,12 +151,13 @@ namespace osr
 {
 
 PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, SceneNode& node,
-                     const glm::dvec3& grid, const double heading) :
+                     const glm::dvec3& grid, const double heading, const DriverChoice driver) :
     engine(engine),
     world(world),
     node(node),
     driveline(raceengine::golfGtiMk7Driveline()),
-    steering(keyboardSteering())
+    steering(keyboardSteering()),
+    driver(driver)
 {
     // The car the mesh already is. `placeholderSedan` stays what it has always been — a fixture
     // whose every figure was chosen so the model could be validated against a car with no data of
@@ -169,40 +201,62 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld&
     writeNode();
 }
 
+// The keyboard, or the gate's standing start. Which one is a property of the run and is settled
+// before the first tick; what comes out of either is the same six numbers.
+DriverDemand PlayerCar::demand() const
+{
+    if (driver == DriverChoice::Launch)
+    {
+        // Full throttle from rest in first, and a steering input half a second later. What that
+        // puts in front of the driving gate is the whole chain the parked car left out: the torque
+        // curve away from idle, the clutch, the gearbox and final drive, the differential's split,
+        // longitudinal slip at the driven wheels, the load transfer that squats the car, and then
+        // the tyre's lateral model and the camera's lean against all of it.
+        return DriverDemand{.steering = ticks < launchSteerTick ? 0.0 : launchSteering,
+                            .throttle = ticks < launchTicks ? 1.0 : 0.0};
+    }
+
+    const auto& window = engine.window();
+
+    return DriverDemand{.steering = (window.keyPressed(Key::D) ? 1.0 : 0.0) - (window.keyPressed(Key::A) ? 1.0 : 0.0),
+                        .throttle = window.keyPressed(Key::W) ? 1.0 : 0.0,
+                        .brake = window.keyPressed(Key::S) ? 1.0 : 0.0,
+                        .handbrake = window.keyPressed(Key::Space),
+                        .upshift = window.keyPressed(Key::LeftShift),
+                        .downshift = window.keyPressed(Key::LeftControl)};
+}
+
 void PlayerCar::update(const float delta)
 {
     const auto tick = static_cast<double>(delta);
-    const auto& window = engine.window();
+    const auto asked = demand();
 
-    // A key is nought or one and a rack is neither, which is the whole of why the demand goes
-    // through a controller rather than into the input.
-    const auto demand = (window.keyPressed(Key::D) ? 1.0 : 0.0) - (window.keyPressed(Key::A) ? 1.0 : 0.0);
-
-    const auto upshift = window.keyPressed(Key::LeftShift);
-    const auto downshift = window.keyPressed(Key::LeftControl);
+    ticks++;
 
     // GLFW reports an edge and the window reports a level, so the edge has to be recovered here.
     // The fullscreen binding does not need this because the platform kept its edge; a polled key
     // has already lost it.
-    if (upshift && !upshiftHeld)
+    if (asked.upshift && !upshiftHeld)
     {
         gear = std::min(gear + 1, static_cast<std::int32_t>(driveline.gearbox.ratios.size()));
     }
-    if (downshift && !downshiftHeld)
+    if (asked.downshift && !downshiftHeld)
     {
         gear = std::max(gear - 1, -1);
     }
 
-    upshiftHeld = upshift;
-    downshiftHeld = downshift;
+    upshiftHeld = asked.upshift;
+    downshiftHeld = asked.downshift;
 
     auto input = raceengine::VehicleInput{};
-    input.steering = steering.update(demand, groundSpeed(), tick);
-    input.throttle = window.keyPressed(Key::W) ? 1.0 : 0.0;
-    input.brake = window.keyPressed(Key::S) ? 1.0 : 0.0;
+    // A key is nought or one and a rack is neither, which is the whole of why the demand goes
+    // through a controller rather than into the input.
+    input.steering = steering.update(asked.steering, groundSpeed(), tick);
+    input.throttle = asked.throttle;
+    input.brake = asked.brake;
     input.gear = gear;
 
-    const auto handbrake = window.keyPressed(Key::Space);
+    const auto handbrake = asked.handbrake;
     const auto substepTime = tick / static_cast<double>(substeps);
     const auto entryVelocity = state.chassis.linearVelocity;
     const auto inertias = raceengine::wheelInertias(setup);

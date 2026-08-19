@@ -19,8 +19,12 @@ target_sources(OpenStreetRace PRIVATE
         Game/Entities/Bollard.cppm
         Game/Entities/CarEntity.cppm
         Game/Entities/DinosaurEntity.cppm
+        Game/Entities/GroundPlane.cppm
         Game/Game.cppm
-        Game/Scenes/WaterLevel.cppm
+        Game/Options.cppm
+        Game/Scenes/ApronScene.cppm
+        Game/Scenes/CircuitScene.cppm
+        Game/Scenes/RenderRig.cppm
         Game/Track/RaceTrack.cppm
         Game/Vehicle/PlayerCar.cppm
         Game/Vehicle/SteeringController.cppm
