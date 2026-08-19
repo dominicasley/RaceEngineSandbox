@@ -1,5 +1,6 @@
 module;
 
+#include <cstdlib>
 #include <expected>
 #include <optional>
 #include <stdexcept>
@@ -14,6 +15,7 @@ import :Bollard;
 import :CarEntity;
 import :ChaseCameraController;
 import :DinosaurEntity;
+import :FPSCameraController;
 import :GroundPlane;
 import :PlayerCar;
 import :TrackFrame;
@@ -35,7 +37,12 @@ private:
     // which is the same rule the engine's own member list runs on.
     raceengine::ProvingGroundDescriptor track;
     raceengine::PhysicsWorld provingGround;
-    ChaseCameraController chaseCamera;
+
+    // Exactly one of these is engaged, chosen in the constructor. Both write the camera's direction
+    // on every tick, so a scene holding two live controllers would have one of them silently
+    // overwritten before the first frame.
+    std::optional<ChaseCameraController> chaseCamera;
+    std::optional<FPSCameraController> freeCamera;
 
     RenderableModel* sky;
     // Built in the body rather than the initialiser list because both need the "pbr" shader, which
@@ -74,6 +81,42 @@ template <typename T> T orThrow(std::expected<T, std::string> result)
     return std::move(result).value();
 }
 
+enum class CameraChoice
+{
+    Chase,
+    Fixed
+};
+
+// Which camera the scene is watched from, off `OSR_CAMERA` and read once.
+//
+// It is an environment variable rather than a compile-time choice because the two frame gates need
+// one run each and a gate that has to be rebuilt before it can be run is a gate nobody runs. An
+// unrecognised value is refused rather than quietly defaulted: a run that fell back would compare
+// one camera's capture against the other camera's golden frame and report the difference as a
+// rendering change.
+[[nodiscard]] CameraChoice cameraChoice()
+{
+    const auto* requested = std::getenv("OSR_CAMERA");
+    if (requested == nullptr)
+    {
+        return CameraChoice::Chase;
+    }
+
+    const auto value = std::string(requested);
+    if (value == "chase")
+    {
+        return CameraChoice::Chase;
+    }
+
+    if (value == "fixed")
+    {
+        return CameraChoice::Fixed;
+    }
+
+    throw std::runtime_error("OSR_CAMERA names a camera this game does not have: '" + value +
+                             "'. It takes 'chase' or 'fixed'.");
+}
+
 } // namespace
 
 WaterLevel::WaterLevel(raceengine::Engine& engine) :
@@ -81,8 +124,7 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
     track(raceengine::defaultProvingGround()),
-    provingGround(orThrow(raceengine::PhysicsWorld::create(orThrow(raceengine::generateProvingGround(track))))),
-    chaseCamera(engine)
+    provingGround(orThrow(raceengine::PhysicsWorld::create(orThrow(raceengine::generateProvingGround(track)))))
 {
     // Directional, and its direction is the exact opposite of the position the shading reads as
     // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
@@ -132,10 +174,26 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
     engine.camera().setToneCurve(camera, ToneCurve{.contrast = 1.0f, .toe = 0.12f, .shoulder = 0.1f});
 
     engine.camera().setRoll(camera, 0, 1, 0);
-    // No position and no lookAtPoint here. The chase camera below writes both on every tick and is
-    // the only thing that does, so anything set here would be overwritten before the first frame —
-    // which is precisely what happened to the aerial spawn view this scene used to have, for long
-    // enough to be worth a note in the engine's own documentation.
+
+    // Never lookAtPoint: whichever controller is engaged below writes the direction on every tick,
+    // so a framing stated here would be overwritten before the first frame — which is precisely
+    // what happened to the aerial spawn view this scene used to have, for long enough to be worth a
+    // note in the engine's own documentation.
+    if (cameraChoice() == CameraChoice::Chase)
+    {
+        // The game as it is played, and the view the driving gate captures: it writes the position
+        // too, so there is none to state.
+        chaseCamera.emplace(engine);
+    }
+    else
+    {
+        // The rendering gate's framing, and it stands on the apron rather than looking down on it.
+        // The ground-to-wall crease, the recesses in the facade and the contact under the car are
+        // where the indirect light does its work, and from six hundred units up they are a handful
+        // of pixels each. Yaw a little off the building's axis, pitch just above the horizon.
+        engine.camera().setPosition(camera, 270, 32, 250);
+        freeCamera.emplace(engine, -2.356, 0.110);
+    }
 
     auto loaded = awaitAll(engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
@@ -443,7 +501,16 @@ WaterLevel::WaterLevel(raceengine::Engine& engine) :
 void WaterLevel::update(float delta)
 {
     player->update(delta);
-    chaseCamera.update(camera, player->vehicle(), player->acceleration(), delta);
+
+    if (chaseCamera)
+    {
+        chaseCamera->update(camera, player->vehicle(), player->acceleration(), delta);
+    }
+    else if (freeCamera)
+    {
+        freeCamera->update(camera, delta);
+    }
+
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }
 

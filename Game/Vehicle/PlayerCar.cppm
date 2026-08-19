@@ -39,8 +39,8 @@ export class PlayerCar
     static constexpr int substeps = 3;
 
     // Per rear wheel, N.m. A handbrake is a cable to the rear brakes and is worth about a third of
-    // what the pedal does there, which on this car's placeholder 1400 is nine hundred.
-    static constexpr double handbrakeTorque = 900.0;
+    // what the pedal does there, which on this car's 525 a corner is a hundred and seventy-five.
+    static constexpr double handbrakeTorque = 175.0;
 
     // One pole at about a hertz on the acceleration the chase camera is driven from. What comes out
     // of a tick is a difference of two velocities across three substeps of contact impulses, and a
@@ -121,10 +121,13 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, const raceengine::PhysicsWorld&
     engine(engine),
     world(world),
     node(node),
-    driveline(raceengine::placeholderDriveline()),
+    driveline(raceengine::golfGtiMk7Driveline()),
     steering(keyboardSteering())
 {
-    auto built = raceengine::placeholderSedan();
+    // The car the mesh already is. `placeholderSedan` stays what it has always been — a fixture
+    // whose every figure was chosen so the model could be validated against a car with no data of
+    // its own — and it is not what a game should be driving once a real one exists.
+    auto built = raceengine::golfGtiMk7();
     if (!built)
     {
         throw std::runtime_error(built.error());
