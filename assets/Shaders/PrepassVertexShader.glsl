@@ -12,6 +12,7 @@
 
 layout(location = ATTRIBUTE_POSITION) in vec3 vertexPositionModelSpace;
 layout(location = ATTRIBUTE_NORMAL) in vec3 vertexNormalModelSpace;
+layout(location = ATTRIBUTE_TEXCOORD) in vec2 vertexTextureCoordinates;
 layout(location = ATTRIBUTE_JOINT) in vec4 vertexJointIndicies;
 layout(location = ATTRIBUTE_WEIGHT) in vec4 vertexJointWeights;
 
@@ -31,6 +32,7 @@ layout(set = SET_DRAW, binding = JOINT_DATA_BINDING) uniform JointData {
 
 layout(location = 0) out vec3 normalInViewSpace;
 layout(location = 1) out vec3 positionInViewSpace;
+layout(location = 2) out vec2 textureCoordinates;
 
 void main()
 {
@@ -50,6 +52,7 @@ void main()
     // the view matrix a second time is a wrong normal that still looks like a normal: the gather
     // then reads every surface as tilted, and answers with large smooth patches of shading that
     // follow the mesh rather than the light.
+    textureCoordinates = vertexTextureCoordinates;
     normalInViewSpace = mat3(draw.normalMatrix) * mat3(boneTransform) * vertexNormalModelSpace;
     positionInViewSpace = vec3(draw.localToView * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 

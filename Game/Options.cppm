@@ -30,7 +30,7 @@ export enum class SceneChoice {
     Apron
 };
 
-export enum class CameraChoice { Chase, Fixed };
+export enum class CameraChoice { Chase, Cockpit, Fixed };
 
 export enum class DriverChoice {
     // Whoever is at the keyboard, which under an unattended run is nobody.
@@ -95,6 +95,17 @@ namespace
         return CameraChoice::Fixed;
     }
 
+    if (value == "cockpit")
+    {
+        if (chosen == SceneChoice::Apron)
+        {
+            throw std::runtime_error("OSR_CAMERA asks for the cockpit camera on the apron, which has no vehicle to "
+                                     "sit in: its car is a transform rather than a simulation.");
+        }
+
+        return CameraChoice::Cockpit;
+    }
+
     if (value == "chase")
     {
         if (chosen == SceneChoice::Apron)
@@ -107,7 +118,7 @@ namespace
     }
 
     throw std::runtime_error("OSR_CAMERA names a camera this game does not have: '" + value +
-                             "'. It takes 'chase' or 'fixed'.");
+                             "'. It takes 'chase', 'cockpit' or 'fixed'.");
 }
 
 [[nodiscard]] DriverChoice driver(const SceneChoice chosen)

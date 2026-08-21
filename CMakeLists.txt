@@ -15,6 +15,7 @@ target_sources(OpenStreetRace PRIVATE
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
         Game/Camera/ChaseCameraController.cppm
+        Game/Camera/CockpitCameraController.cppm
         Game/Camera/FPSCameraController.cppm
         Game/Entities/Bollard.cppm
         Game/Entities/CarEntity.cppm

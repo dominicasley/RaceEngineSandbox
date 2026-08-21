@@ -7,6 +7,7 @@
 // Graphics/Api/RenderContract.cppm; this file must not spell one of those numbers.
 
 layout(location = ATTRIBUTE_POSITION) in vec3 vertexPositionModelSpace;
+layout(location = ATTRIBUTE_TEXCOORD) in vec2 vertexTextureCoordinates;
 layout(location = ATTRIBUTE_JOINT) in vec4 vertexJointIndicies;
 layout(location = ATTRIBUTE_WEIGHT) in vec4 vertexJointWeights;
 
@@ -24,8 +25,12 @@ layout(set = SET_DRAW, binding = JOINT_DATA_BINDING) uniform JointData {
     mat4 jointTransforms[MAX_JOINTS];
 } skin;
 
+layout(location = 0) out vec2 textureCoordinates;
+
 void main()
 {
+    textureCoordinates = vertexTextureCoordinates;
+
     mat4 boneTransform = mat4(1.0f);
     vec4 jointWeights = vertexJointWeights;
 

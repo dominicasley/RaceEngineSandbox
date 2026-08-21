@@ -62,7 +62,7 @@ layout(set = SET_FRAME, binding = PROBE_SPECULAR_BINDING) uniform samplerCubeArr
 // bytes each, which the C++ glm::mat3 does not, so the ABI carries it as a mat4.
 layout(set = SET_MATERIAL, binding = 0) uniform MaterialData {
     vec4 baseColour;
-    vec4 roughMetal;       // x roughness, y metalness
+    vec4 roughMetal;       // x roughness, y metalness, z alpha cutoff (0 = no test)
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
     ivec4 useTextures2;    // x occlusion
     mat4 textureTransform; // KHR_texture_transform, upper 3x3
@@ -407,7 +407,8 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // bias is a property of the surface the depth map recorded, not of its texture. Lights carry
     // the direction *towards* the light in `position`, which is what the loop below reads too.
     int shadowLight = clamp(frame.shadowParams.y, 0, MAX_LIGHTS - 1);
-    float shadow = shadowFactor(positionInWorldSpace, normalize(normalsInWorldSpace),
+    vec3 geometricNormal = normalize(gl_FrontFacing ? normalsInWorldSpace : -normalsInWorldSpace);
+    float shadow = shadowFactor(positionInWorldSpace, geometricNormal,
                                 normalize(frame.lights[shadowLight].position.xyz), -positionInViewSpace.z);
 
     for (int lightIndex = 0; lightIndex < frame.lightCount.x; lightIndex++)
@@ -570,7 +571,26 @@ void main()
         (material.useTextures.z != 0) ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0);
 
     vec4 albedo = material.baseColour * sampledBaseColour;
+
+    // glTF MASK: under the cutoff there is no surface here at all. Discarded before any lighting
+    // is spent on it, and *not* blended — a cut-out is opaque geometry with holes, which is what
+    // lets a tree card write depth and sort like the trunk it stands in for.
+    if (material.roughMetal.z > 0.0 && albedo.a < material.roughMetal.z) {
+        discard;
+    }
+
     vec3 normalMap = (material.useTextures.y != 0) ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
+
+    // The other half of a double-sided material. A fragment seen from behind is the surface's other
+    // side, and every consumer of its normal has to agree: flipped here, the direct term stops
+    // lighting the wrong hemisphere and the probe lookup reflects the world the *viewer's* side of
+    // the pane actually faces. This is what a windscreen looked wrong without — from the seat the
+    // camera sees the glass's inner surface, whose unflipped normal still pointed at the sky, so the
+    // probe handed the driver a bright sky sheen off a pane that should be reflecting the dark
+    // cabin's side of the world.
+    if (!gl_FrontFacing) {
+        normalMap = vec3(normalMap.xy, -normalMap.z);
+    }
     // r stays the sampled channel: it is read as occlusion and glTF states no factor for it.
     vec4 specularMap = vec4(sampledMetallicRoughness.r,
                             material.roughMetal.x * sampledMetallicRoughness.g,

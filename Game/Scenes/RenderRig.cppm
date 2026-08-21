@@ -41,14 +41,22 @@ export template <typename T> T orThrow(std::expected<T, std::string> result)
 
 // The sky, which is the one thing the rig hands back: it follows the camera, so the scene has to put
 // it back on every tick.
-export [[nodiscard]] RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera);
+//
+// `skyDistance` is how far out the sky box stands, in world units, and it is the scene's number
+// because it is a fact about the scene's size and not about how anything is drawn: the box is real
+// geometry that writes depth, so everything visible must sit inside it, and a 60 m apron and a 6 km
+// circuit have no distance in common. A scene that raises it must raise its camera's far plane past
+// `skyDistance * sqrt(3)` — the box's corners — and its probes' far clip with it, or the sky falls
+// out of the frustum and the probes photograph the void.
+export [[nodiscard]] RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera,
+                                                     float skyDistance = 2500.0f);
 
 } // namespace osr
 
 namespace osr
 {
 
-RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera)
+RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera, const float skyDistance)
 {
     // Directional, and its direction is the exact opposite of the position the shading reads as
     // "towards the light" — the cascades are fitted along `direction` and the lighting is computed
@@ -257,13 +265,18 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
     // every frame — so the cascades are spread over the *view* and not over the world, and a 6.2 km
     // circuit costs them nothing that a 60 m apron did not.
     //
-    // 2000 units is 200 m, which is what the distance has to be measured against: the skybox follows
-    // the camera at 2500 units, so 250 m is as far as anything can be seen at all. Shadows therefore
-    // reach four fifths of the visible depth, and the band behind that draws unshadowed.
+    // Lambda 0.9, and the number is where the texels go. At 0.5 — the generic advice for a view that
+    // is mostly distance — the uniform arm dominates the first split and cascade 0 ran out to 26 m,
+    // which put its texels at 3 cm and made every shadow within arm's reach soft: an A-pillar's
+    // shadow on the dashboard, half a metre from the eye, was a 10 cm smear once the 3-texel normal
+    // offset and the PCF sat on top. At 0.9 the first split lands near 5.6 m and a cascade-0 texel
+    // is 6.5 mm, which is what makes a shadow cast *into the car* read as an edge. The price is paid
+    // at the far end, where the last cascade coarsens to ~12 cm texels beyond 40 m — softness that
+    // distance and the PCF were already hiding.
     orThrow(engine.shadow().enable(scene, sun, camera,
                                    raceengine::CreateShadowCascadesDTO{.depthShader = depthShader,
                                                                        .resolution = 2048,
-                                                                       .lambda = 0.5f,
+                                                                       .lambda = 0.9f,
                                                                        .distance = 2000.0f,
                                                                        .casterExtent = 1500.0f}));
 
@@ -271,7 +284,7 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
         scene, CreateRenderableModelDTO{
                    .node = engine.sceneManager().createNode(scene), .shader = skyboxShader, .model = skyboxModel});
 
-    engine.sceneManager().setScale(skyEntity.node, 2500.0f, 2500.0f, 2500.0f);
+    engine.sceneManager().setScale(skyEntity.node, skyDistance, skyDistance, skyDistance);
     // The sky is not a caster. A 2500-unit box in the depth map fills every cascade at its near
     // plane, and the whole world is then in its shadow.
     skyEntity.castsShadow = false;

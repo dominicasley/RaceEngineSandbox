@@ -126,7 +126,14 @@ export constexpr auto gridSlots =
                GridSlot{.position = glm::dvec3(322.27423, 26.43453, -544.63446), .yaw = -100.000030},
                GridSlot{.position = glm::dvec3(323.16879, 26.44857, -549.76215), .yaw = -100.000030}};
 
-export inline constexpr auto trackAsset = std::string_view("assets/Tracks/rt_bathurst_track.glb");
+// Two exports of one circuit, and each is read by exactly one consumer. The visual model is the
+// scenery — buildings, trees, the mount — and only the renderer touches it; the physics model is
+// the drivable surfaces under AC's `1SURFACE_` naming, and only the collision reader touches it.
+// Splitting them is what lets the picture carry 681 primitives of scenery without the BVH having to
+// wade through a single triangle of it, and lets the surfaces stay exact while the scenery is
+// re-exported at will.
+export inline constexpr auto trackVisualAsset = std::string_view("assets/Tracks/rt_bathurst_visual.glb");
+export inline constexpr auto trackPhysicsAsset = std::string_view("assets/Tracks/rt_bathurst_physics.glb");
 
 // The surface table in the order `trackSurfaces` states it, which is the order a triangle's surface
 // index means.
@@ -354,6 +361,28 @@ trackCollisionMesh(raceengine::MemoryStorageService& storage, const raceengine::
             }
 
             mesh.surfaces.insert(mesh.surfaces.end(), primitive.elementCount / 3, surface.value());
+
+            // A barrier is emitted twice, wound both ways, and the doubling is armour rather than
+            // tidiness. The shape query ignores back faces — the proving ground's own barrier was
+            // driven straight through while every ray cast said it was there — and an imported
+            // track's wall winding is whatever the modder authored: audited against the racing
+            // line, 8% of this circuit's merged wall loop faces away from the road, which is a car
+            // that bounces off most walls and sails through particular ones, the least diagnosable
+            // version of "no walls". A wall's job is to stop a car from *both* sides — being
+            // between a wall and the road edge is an ordinary place for a rally-crossed car to be —
+            // so both windings is what a barrier means, not a workaround. Drivable surfaces stay
+            // single-sided: a tyre reaches them through rays, which have no facing to get wrong.
+            if (trackSurfaces[surface.value()].kind == raceengine::SurfaceKind::Wall)
+            {
+                for (auto element = std::size_t{0}; element + 2 < primitive.elementCount; element += 3)
+                {
+                    mesh.indices.push_back(base + readIndex(element));
+                    mesh.indices.push_back(base + readIndex(element + 2));
+                    mesh.indices.push_back(base + readIndex(element + 1));
+                }
+
+                mesh.surfaces.insert(mesh.surfaces.end(), primitive.elementCount / 3, surface.value());
+            }
         }
     }
 

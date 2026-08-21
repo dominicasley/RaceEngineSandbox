@@ -31,16 +31,17 @@ public:
 
         const auto model = std::move(loaded).value();
 
-        auto& renderable = engine.scene().createEntity(
+        auto& created = engine.scene().createEntity(
             scene, CreateRenderableModelDTO{
                        .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model});
+        renderable = &created;
 
         // Traffic, not scenery: a light probe captures its environment once and is shaded from for
         // many frames afterwards, so a car baked into one would go on lighting the street from
         // wherever it was parked when the capture ran — including after it has driven away.
-        renderable.staticGeometry = false;
+        created.staticGeometry = false;
 
-        const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, renderable);
+        const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, created);
 
         // Where it stands is not this entity's: on the circuit the vehicle model writes the node
         // from the first tick, and on the apron the scene places it. Stating a position here would
@@ -62,9 +63,17 @@ public:
         return node;
     }
 
+    // The renderable itself, so the game can drive a named part of the model — the steering wheel
+    // is the first — through its per-instance mesh transforms.
+    [[nodiscard]] RenderableModel& renderableModel() const
+    {
+        return *renderable;
+    }
+
 private:
     Entity& entity;
     SceneNode& node;
+    RenderableModel* renderable = nullptr;
 };
 
 } // namespace osr

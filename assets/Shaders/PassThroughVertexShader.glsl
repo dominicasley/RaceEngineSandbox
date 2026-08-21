@@ -97,8 +97,25 @@ void main()
 
     normalsInWorldSpace = normalize(draw.localToWorld * boneTransform * vec4(vertexNormalModelSpace.xyz, 0.0)).xyz;
     normalsInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * vertexNormalModelSpace);
-    tangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * vec3(vertexTangentModelSpace));
-    bitangentInNormalSpace = normalize(normalMatrix3 * mat3(boneTransform) * bitangent);
+
+    // Guarded, because a primitive with no TANGENT attribute reads the pipeline's dummy — a zero
+    // vector — and normalize(0) is NaN on this driver. The NaN rides the varying into the fragment
+    // stage where 0 * NaN is still NaN, so the whole tangent frame poisons the shading normal even
+    // though the normal map's x and y are zero: every direct term dies (a sunlit road rendering
+    // near-black) and the specular direction goes undefined per pixel, which is visible as
+    // lighting flicker in motion. The fallback is a *synthesised* frame about the normal, not a
+    // zero one: the whole of the direct term is computed in this frame, and a degenerate frame
+    // collapses the light direction onto its normal axis — a cosine of one at every sun angle. Any
+    // in-plane orientation does, because the only normal map that reaches it is flat.
+    vec3 tangentRotated = normalMatrix3 * mat3(boneTransform) * vec3(vertexTangentModelSpace);
+    vec3 bitangentRotated = normalMatrix3 * mat3(boneTransform) * bitangent;
+    if (dot(tangentRotated, tangentRotated) < 1e-12) {
+        vec3 helper = abs(normalsInNormalSpace.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        tangentRotated = cross(helper, normalsInNormalSpace);
+        bitangentRotated = cross(normalsInNormalSpace, tangentRotated);
+    }
+    tangentInNormalSpace = normalize(tangentRotated);
+    bitangentInNormalSpace = normalize(bitangentRotated);
 
     mat3 tangentBinormalNormalMatrix = mat3(
         tangentInNormalSpace.x, bitangentInNormalSpace.x, normalsInNormalSpace.x,

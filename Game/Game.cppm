@@ -8,6 +8,7 @@ export import :ApronScene;
 export import :Bollard;
 export import :CarEntity;
 export import :ChaseCameraController;
+export import :CockpitCameraController;
 export import :CircuitScene;
 export import :DinosaurEntity;
 export import :FPSCameraController;
