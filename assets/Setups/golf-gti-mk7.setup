@@ -102,5 +102,13 @@ ffb.damping      0.0
 # ten, and four hertz is where that cost is smallest while the two hertz it exists for still gets
 # real damping. Below four the return to centre goes negative too and the whole term inverts.
 #
+# **Eight, not four, since the simulation got its own clock** (2026-08-21, evening). The table above
+# is still the right method and its numbers were taken at a loop this engine no longer runs. Four was
+# never the damper's best corner — it was the largest one that did not shake, and eight is worth
+# twice as much return to centre (+0.75 against +0.37). What made eight shake was not the damper
+# alone: a limit cycle needs an exciter as well as a negative term, and the exciter was the road-feel
+# path chopping at the frame rate, which a fixed-rate simulation thread removed. With nothing feeding
+# it, the mildly negative term at ten hertz has nothing to amplify.
+#
 # **Dominic's, chosen from the seat 2026-08-21 after a session at several values. Do not retune it.**
-ffb.damperhz      4.0
+ffb.damperhz      8.0

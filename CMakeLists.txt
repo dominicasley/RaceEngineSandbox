@@ -28,6 +28,8 @@ target_sources(OpenStreetRace PRIVATE
         Game/Scenes/RenderRig.cppm
         Game/Track/RaceTrack.cppm
         Game/Vehicle/PlayerCar.cppm
+        Game/Vehicle/SimulatedCar.cppm
+        Game/Vehicle/Simulation.cppm
         Game/Vehicle/SteeringController.cppm
         Game/Vehicle/TrackFrame.cppm)
 

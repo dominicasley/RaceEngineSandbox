@@ -16,6 +16,8 @@ import :Options;
 import :PlayerCar;
 import :RaceTrack;
 import :RenderRig;
+import :Simulation;
+import :SimulatedCar;
 import :TrackFrame;
 
 import raceengine;
@@ -41,7 +43,13 @@ private:
     // spend. Declared before everything that queries them, the engine's own member-order rule.
     raceengine::Resource<raceengine::Model> trackModel;
     raceengine::Resource<raceengine::Model> physicsModel;
-    raceengine::PhysicsWorld track;
+    // The world went inside the simulation when the simulation got a thread: it is the thing being
+    // queried from that thread, so it is the thing that must outlive it, and holding it here would
+    // leave that guarantee to this class's member order rather than stating it where the thread is.
+    // It is `const` throughout today, which is what makes a reader on another thread safe at all —
+    // the day anything mutates it, the simulation already owns it outright.
+    std::optional<Simulation> simulation;
+    SimulatedCar* simulatedCar = nullptr;
 
     // Exactly one of these is engaged, chosen in the constructor. Both write the camera's direction
     // on every tick, so a scene holding two live controllers would have one of them silently
@@ -65,6 +73,16 @@ private:
 
 public:
     CircuitScene(raceengine::Engine& engine, const RunOptions& options);
+    // The simulation's thread is stopped here, before a single member is destroyed. `~PlayerCar`
+    // writes the session's rack trace out of the force feedback service, and a trace taken while
+    // the simulation is still publishing into it ends in the middle of a tick.
+    ~CircuitScene();
+
+    CircuitScene(const CircuitScene&) = delete;
+    CircuitScene(CircuitScene&&) = delete;
+    CircuitScene& operator=(const CircuitScene&) = delete;
+    CircuitScene& operator=(CircuitScene&&) = delete;
+
     void update(float delta);
 };
 
@@ -78,9 +96,16 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
     trackModel(orThrow(engine.resource().loadModelAsync(std::string(trackVisualAsset)).get())),
-    physicsModel(orThrow(engine.resource().loadModelAsync(std::string(trackPhysicsAsset)).get())),
-    track(orThrow(raceengine::PhysicsWorld::create(orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))))
+    physicsModel(orThrow(engine.resource().loadModelAsync(std::string(trackPhysicsAsset)).get()))
 {
+    // The simulation, with the circuit's surfaces in it. Driven a tick at a time under a capture and
+    // free-running otherwise — the same test `Engine::frameDelta` makes, because it is the same
+    // question: is this run's clock the frame number or the wall.
+    simulation.emplace(engine,
+                       orThrow(raceengine::PhysicsWorld::create(
+                           orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))),
+                       std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
+
     // Faster film, and it is not a look — it is what stops the meter running out of shutter.
     //
     // Film speed and aperture cancel out of the exposure multiplier, so two cameras metering the
@@ -197,8 +222,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = gridSlots.front();
-    player.emplace(engine, track, car->sceneNode(), car->renderableModel(), slot.position, glm::radians(slot.yaw),
-                   options.driver);
+    simulatedCar = &simulation->add(slot.position, glm::radians(slot.yaw), options.driver);
+    player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel());
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.
     //
@@ -227,17 +252,33 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                                // box photographs the void below its horizon.
                                                .farClippingPlane = 55000.0f}));
 
+    // Nothing ticks until the world is whole. Started before the update callback is registered for
+    // the same reason that callback is registered last: the first tick may come immediately.
+    simulation->start();
+
     // Registered last, once the scene is fully built: the engine may call this the moment the
     // first tick runs, and a half-constructed scene is not something it should be handed.
     engine.onUpdate([this](float delta) { update(delta); });
 }
 
-// Writers before readers, inside the stage the engine calls the game's own logic: the car is
-// stepped and writes its node, the camera is aimed at where the car ended up, and the sky is put
-// back on the camera. Entity behaviours and the scene's own settling both run after this returns.
+CircuitScene::~CircuitScene()
+{
+    simulation->stop();
+}
+
+// Writers before readers, inside the stage the engine calls the game's own logic — and the three
+// steps are now a handoff, a simulation tick and a handoff back.
+//
+// `publish` sends the main thread's decisions across (the setup sheet, the driver's keys) and has to
+// run *before* the ticks it is meant to affect. `advance` runs exactly one engine tick's worth of
+// simulation and waits for it under a capture, and returns immediately otherwise. `collect` takes
+// one snapshot and draws everything from it, so the node, the rim, the sound and the camera are all
+// the same instant of car rather than several fields sampled as the tick moved under them.
 void CircuitScene::update(float delta)
 {
-    player->update(delta);
+    player->publish();
+    simulation->advance(Simulation::ticksPerEngineTick);
+    player->collect();
 
     if (chaseCamera)
     {
