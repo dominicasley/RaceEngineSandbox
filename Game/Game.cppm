@@ -16,6 +16,8 @@ export import :GroundPlane;
 export import :Options;
 export import :PlayerCar;
 export import :RenderRig;
+export import :SimulatedCar;
+export import :Simulation;
 export import :SteeringController;
 export import :TrackFrame;
 
