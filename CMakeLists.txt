@@ -14,13 +14,22 @@ target_sources(OpenStreetRace PRIVATE
         FILE_SET CXX_MODULES
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
         FILES
+        Game/Camera/ChaseCameraController.cppm
+        Game/Camera/CockpitCameraController.cppm
         Game/Camera/FPSCameraController.cppm
         Game/Entities/Bollard.cppm
         Game/Entities/CarEntity.cppm
         Game/Entities/DinosaurEntity.cppm
         Game/Entities/GroundPlane.cppm
         Game/Game.cppm
-        Game/Scenes/WaterLevel.cppm)
+        Game/Options.cppm
+        Game/Scenes/ApronScene.cppm
+        Game/Scenes/CircuitScene.cppm
+        Game/Scenes/RenderRig.cppm
+        Game/Track/RaceTrack.cppm
+        Game/Vehicle/PlayerCar.cppm
+        Game/Vehicle/SteeringController.cppm
+        Game/Vehicle/TrackFrame.cppm)
 
 find_package(spdlog CONFIG REQUIRED)
 

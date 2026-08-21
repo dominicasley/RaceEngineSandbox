@@ -12,6 +12,7 @@
 
 layout(location = ATTRIBUTE_POSITION) in vec3 vertexPositionModelSpace;
 layout(location = ATTRIBUTE_NORMAL) in vec3 vertexNormalModelSpace;
+layout(location = ATTRIBUTE_TEXCOORD) in vec2 vertexTextureCoordinates;
 layout(location = ATTRIBUTE_JOINT) in vec4 vertexJointIndicies;
 layout(location = ATTRIBUTE_WEIGHT) in vec4 vertexJointWeights;
 
@@ -21,11 +22,17 @@ layout(set = SET_DRAW, binding = 0) uniform DrawData {
     mat4 localToScreen; // clip-corrected for Vulkan depth 0..1 by the renderer
     mat4 normalMatrix;  // upper 3x3 meaningful
     ivec4 animated;     // x != 0 when skinned
-    mat4 jointTransforms[MAX_JOINTS];
 } draw;
+
+// The skinning palette, at a binding of its own on a ring of its own; unskinned draws bind its
+// zeroed first slot. See PassThroughVertexShader for why it is not a tail of the block above.
+layout(set = SET_DRAW, binding = JOINT_DATA_BINDING) uniform JointData {
+    mat4 jointTransforms[MAX_JOINTS];
+} skin;
 
 layout(location = 0) out vec3 normalInViewSpace;
 layout(location = 1) out vec3 positionInViewSpace;
+layout(location = 2) out vec2 textureCoordinates;
 
 void main()
 {
@@ -33,10 +40,10 @@ void main()
     vec4 jointWeights = vertexJointWeights;
 
     if (draw.animated.x != 0) {
-        boneTransform = jointWeights.x * draw.jointTransforms[int(vertexJointIndicies.x)] +
-        jointWeights.y * draw.jointTransforms[int(vertexJointIndicies.y)] +
-        jointWeights.z * draw.jointTransforms[int(vertexJointIndicies.z)] +
-        jointWeights.w * draw.jointTransforms[int(vertexJointIndicies.w)];
+        boneTransform = jointWeights.x * skin.jointTransforms[int(vertexJointIndicies.x)] +
+        jointWeights.y * skin.jointTransforms[int(vertexJointIndicies.y)] +
+        jointWeights.z * skin.jointTransforms[int(vertexJointIndicies.z)] +
+        jointWeights.w * skin.jointTransforms[int(vertexJointIndicies.w)];
     }
 
     // `normalMatrix` is already the inverse transpose of localToView — the *view*-space normal
@@ -45,6 +52,7 @@ void main()
     // the view matrix a second time is a wrong normal that still looks like a normal: the gather
     // then reads every surface as tilted, and answers with large smooth patches of shading that
     // follow the mesh rather than the light.
+    textureCoordinates = vertexTextureCoordinates;
     normalInViewSpace = mat3(draw.normalMatrix) * mat3(boneTransform) * vertexNormalModelSpace;
     positionInViewSpace = vec3(draw.localToView * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 

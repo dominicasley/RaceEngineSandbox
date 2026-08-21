@@ -3,6 +3,8 @@ module;
 #include <stdexcept>
 #include <utility>
 
+#include <glm/glm.hpp>
+
 export module osr.game:Bollard;
 
 import raceengine;
@@ -19,7 +21,7 @@ protected:
     };
 
 public:
-    Bollard(raceengine::Engine& engine, Scene& scene) :
+    Bollard(raceengine::Engine& engine, Scene& scene, const glm::vec3& stand) :
         entity(engine.entity().createEntity()),
         node(engine.sceneManager().createNode(scene))
     {
@@ -37,8 +39,8 @@ public:
                 scene, CreateRenderableModelDTO{
                            .node = node, .shader = engine.shader().getShaderByName("pbr").value(), .model = model}));
 
-        // Also in front of the building, on the other side of the car.
-        engine.sceneManager().setPosition(node, 40.0f, 0.0f, -110.0f);
+        engine.sceneManager().setPosition(node, stand.x, stand.y, stand.z);
+        // A world unit is a tenth of a metre, so this is a metre of bollard.
         engine.sceneManager().setScale(node, 10.0f, 10.0f, 10.0f);
     }
 

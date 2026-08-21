@@ -1,0 +1,106 @@
+# Golf GTI Mk7.5 — setup sheet.
+#
+# Edit and save: the car picks it up on the next frame, with no rebuild and without leaving the seat.
+# Every line is `key value`. A key nothing is called is an error rather than a line to skip, because a
+# misspelling that is silently ignored is a change you made, felt nothing from, and then spent the
+# afternoon compensating for somewhere else.
+#
+# What is *not* here is the car — geometry, masses, the torque curve, the hardpoints. Those come from
+# the published data and a setup sheet has no business touching them.
+#
+# Everything below is commented out, so as shipped this file changes nothing at all and the car is
+# exactly what its own data says. Uncomment a line to take it over.
+
+# Springs, N/m along the damper axis (not at the wheel: the motion ratio turns one into the other).
+# front.spring    62000
+# rear.spring     48000
+
+# Damper rates, N per m/s along the same axis. Stating one of the two leaves the other alone.
+# front.bump       4200
+# front.rebound    7600
+# rear.bump        3800
+# rear.rebound     6900
+
+# Anti-roll bars, N/m of differential wheel travel across the axle. Zero disables one.
+# front.antiroll  22000
+# rear.antiroll   14000
+
+# Peak brake torque per corner, N.m. The front/rear pair is the brake balance.
+# front.brake      1400
+# rear.brake        900
+
+# The differential. Preload in N.m, ramps as the fraction of input torque each face locks with —
+# power on throttle, coast off it. This is the biggest single change to corner exit.
+# diff.preload       60
+# diff.power_ramp  0.35
+# diff.coast_ramp  0.15
+
+# Which way the rack moves for a positive steering demand. It states the *result* rather than being a
+# toggle: 1 forces the rack travel negative whatever the car's own data says, 0 forces it positive.
+#
+# Commented out because this car's data is right. It is here for a car whose is not — and that is not
+# hypothetical: until 2026-08-20 the sign was taken from the steering *ratio* rather than from the
+# linkage, and this car steered the opposite way to the input on both the wheel and the keyboard.
+# steering.invert   0
+
+# Force feedback. Gain is the dial; the ceiling is in N.m at the rim and the gain cannot raise it.
+#
+# **0.7 is set from the clipping histogram rather than by feel, and it is the knee in that curve.**
+# Short clipping is fine — a kerb strike should hit the rail — but *sustained* clipping is the wheel
+# going numb through a corner, which is exactly where the tyre's pneumatic trail is collapsing and
+# telling you the front is going. Swept over a 261-second session (`ffb-exit.txt` carries the
+# histogram every run, which is what it is for):
+#
+#     gain   clipped   episodes over 250 ms   longest   p95 force
+#     1.00    6.38%           17  (9.6 s)      883 ms    8.00 Nm
+#     0.85    3.43%           11  (4.7 s)      600 ms    7.33 Nm
+#     0.75    1.80%            1  (0.3 s)      267 ms    6.47 Nm
+#     0.70    0.95%            0                183 ms    6.04 Nm
+#     0.60    0.19%            0                 64 ms    5.17 Nm
+#
+# Seven tenths is the *highest* gain at which sustained clipping disappears — everything left is
+# under 200 ms, which is a bump. Below it there is nothing structural left to buy and lowering it
+# only removes force. It costs about 30% of the peak, which is the price of the top of the range
+# meaning something.
+#
+# Check it after any change that moves the tyre, the assist or the ceiling: peak demand should sit
+# near 1.3x and clipping near 1%.
+#
+# **Dominic's, set from the seat 2026-08-21. Do not retune it.**
+ffb.gain          0.7
+ffb.ceiling       8.0
+# Damping opposes the rim's own measured motion, N.m per rad/s — the tuning-menu damper (DPR/NDP)
+# this base cannot reach under hid-fanatecff. It is applied after the ceiling *and* after the slew
+# limit, because a rate-limited damper arrives late and a velocity term ninety degrees late is a
+# spring rather than a damper.
+#
+# "More of it shook harder" was true and was not the damper being wrong: it was the damper having
+# authority at frequencies this loop cannot deliver in phase. Measured on the 12:51 trace, the loop
+# carries 12.7 ms of delay end to end, which bounds a damper to about 1/(4*0.0127) = 20 Hz — and an
+# unfiltered damper's torque *rises* with frequency, so the oscillation parked itself exactly there.
+# Fitting it gives a critical damping of 0.39 N.m per rad/s, against the 0.40 the car itself asks
+# for at a standstill. That is the whole of the residual shake.
+ffb.damping      0.0
+
+# Hz. The corner of the two-pole low pass on the damper's *measurement* of the rim, which is what
+# keeps the damper inside the band the loop's 12.7 ms of delay can actually deliver in. It is not
+# smoothing and it is not on the road feel — the car's torque is untouched end to end.
+#
+# **Four is a sweet spot rather than a compromise, and the table is why.** What matters is not the
+# filter's gain but the damper's *effective* damping — its gain times the cosine of the total phase
+# lag, filter plus transport — because that is the part that removes energy. Positive removes,
+# negative feeds. Measured tau, computed per corner:
+#
+#     corner    2 Hz (the return to centre)   10 Hz (the residual wobble)
+#      2 Hz            -0.08                        -0.03
+#      4 Hz            +0.37                        -0.14
+#      8 Hz            +0.75                        -0.33
+#     none             +0.99                        +0.70   ...but 0.00 at 20 Hz, which is the shake
+#
+# Unfiltered the damper is fine at ten and dies at twenty — exactly 1/(4*tau) — so the filter's job
+# is to be gone by twenty. The cost is that its own phase lag turns the damper mildly negative at
+# ten, and four hertz is where that cost is smallest while the two hertz it exists for still gets
+# real damping. Below four the return to centre goes negative too and the whole term inverts.
+#
+# **Dominic's, chosen from the seat 2026-08-21 after a session at several values. Do not retune it.**
+ffb.damperhz      4.0

@@ -73,7 +73,7 @@ void FPSCameraController::update(Camera& camera, float delta)
                            cos(rotateX - static_cast<double>(3.14f / 2.0f)));
 
     velocity *= 1 / (1 + (delta * 15.0f));
-    acceleration = glm::vec3(100.0f * delta);
+    acceleration = glm::vec3(10.0f * delta);
 
     if (engine.window().keyPressed(Key::D))
     {

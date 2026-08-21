@@ -62,7 +62,7 @@ layout(set = SET_FRAME, binding = PROBE_SPECULAR_BINDING) uniform samplerCubeArr
 // bytes each, which the C++ glm::mat3 does not, so the ABI carries it as a mat4.
 layout(set = SET_MATERIAL, binding = 0) uniform MaterialData {
     vec4 baseColour;
-    vec4 roughMetal;       // x roughness, y metalness
+    vec4 roughMetal;       // x roughness, y metalness, z alpha cutoff (0 = no test)
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
     ivec4 useTextures2;    // x occlusion
     mat4 textureTransform; // KHR_texture_transform, upper 3x3
@@ -367,7 +367,15 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     vec3 N = normalMap;
 
     float occlusion = metallicRoughness.r;
-    float roughness = metallicRoughness.g;
+    // A floor, because zero is now reachable: glTF's roughnessFactor multiplies the texture and
+    // this scene's car paint states 0, where before the factor was discarded and nothing here ever
+    // saw it. At exactly zero D_GGX is 0/0 for a fragment whose half-vector lands on its normal —
+    // a NaN, which the bloom chain would then spread across the frame — and everywhere else it is
+    // simply 0, so a mirror-smooth surface gets no sun glint at all, which is the wrong end of
+    // "perfectly polished". 0.03 sits under every authored value in these assets (the next
+    // smallest is the building's reflective glass at 0.0398), so it changes nothing that is not
+    // the degenerate case itself.
+    float roughness = max(metallicRoughness.g, 0.03);
     float metallic = metallicRoughness.b;
 
     // The material's own occlusion and the view's, combined into the term the indirect light is
@@ -376,8 +384,16 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // scaled. It stays out of the direct term below on purpose: the sun either reaches a surface or
     // is stopped by something the shadow map already knows about, and darkening it here would be
     // the same occluder counted twice.
-    float indirectOcclusion =
-        occlusion * texture(ambientOcclusionMap, gl_FragCoord.xy / vec2(textureSize(ambientOcclusionMap, 0))).r;
+    //
+    // A transparent surface reads none of it. The buffer holds one opaque surface per pixel and
+    // that surface is whatever is *behind* this glass, so sampling it here paints the interior's
+    // occlusion onto the window. The other half of the rule is in the engine, which keeps
+    // transparent geometry out of the prepass entirely — where two coplanar panes would otherwise
+    // fight and the gather would print the fight back onto the glass as hard-edged wedges.
+    float screenOcclusion = material.useTextures2.y != 0
+        ? texture(ambientOcclusionMap, gl_FragCoord.xy / vec2(textureSize(ambientOcclusionMap, 0))).r
+        : 1.0;
+    float indirectOcclusion = occlusion * screenOcclusion;
 
     vec3 specular = mix(vec3(0.04), albedo.rgb, metallic);
 
@@ -391,7 +407,8 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // bias is a property of the surface the depth map recorded, not of its texture. Lights carry
     // the direction *towards* the light in `position`, which is what the loop below reads too.
     int shadowLight = clamp(frame.shadowParams.y, 0, MAX_LIGHTS - 1);
-    float shadow = shadowFactor(positionInWorldSpace, normalize(normalsInWorldSpace),
+    vec3 geometricNormal = normalize(gl_FrontFacing ? normalsInWorldSpace : -normalsInWorldSpace);
+    float shadow = shadowFactor(positionInWorldSpace, geometricNormal,
                                 normalize(frame.lights[shadowLight].position.xyz), -positionInViewSpace.z);
 
     for (int lightIndex = 0; lightIndex < frame.lightCount.x; lightIndex++)
@@ -518,18 +535,67 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     vec3 indirectSpecular = blendedRadiance * (specular * environment.x + environment.y) *
                             specularOcclusion(worldNdV, indirectOcclusion, roughness);
 
-    vec3 direct = occlusion * diffuse_light * mix(albedo.rgb, vec3(0.0), metallic) + max(reflected_light, 0.0);
+    // Premultiplied, and the split is the whole point of it: **coverage scales the diffuse term and
+    // not the reflection**. A pane of glass transmits most of what is behind it and still reflects
+    // the sky at full strength — the reflection is light the surface adds, not light it fails to
+    // block — so a windscreen at alpha 0.3 shaded the naive way loses 70% of the one cue that says
+    // "glass" and reads as a faint grey film over the interior, which is what an absent windscreen
+    // also looks like. Scaled here rather than by the blend state so the frame carries the sum
+    // rather than the ingredients, and the blend is (ONE, ONE_MINUS_SRC_ALPHA) to match.
+    //
+    // At alpha 1 this is exactly the expression it replaced, so every opaque surface is unmoved.
+    vec3 diffuseAlbedo = mix(albedo.rgb, vec3(0.0), metallic);
+    vec3 diffuseTerm = occlusion * diffuse_light * diffuseAlbedo + indirectDiffuse * diffuseAlbedo;
+    vec3 specularTerm = max(reflected_light, 0.0) + indirectSpecular;
 
-    return direct + indirectDiffuse * mix(albedo.rgb, vec3(0.0), metallic) + indirectSpecular;
+    return diffuseTerm * albedo.a + specularTerm;
 }
 
 void main()
 {
     vec2 transformedTextureCoordinates = (mat3(material.textureTransform) * vec3(textureCoordinates, 1.0)).xy;
 
-    vec4 albedo = (material.useTextures.x != 0) ? texture(diffuseTexture, transformedTextureCoordinates) : material.baseColour;
+    // glTF's factors **multiply** the texture; they are not the value it stands in for.
+    // baseColor = baseColorFactor x texture, roughness = roughnessFactor x texture.g,
+    // metallic = metallicFactor x texture.b. Written as a ternary — factor *or* texture — a
+    // material carrying both silently discards the factor, and the factor is where an exporter
+    // puts the part of the answer the shared texture cannot say: this scene's car paint is one
+    // metallicRoughness atlas with `roughnessFactor 0, metallicFactor 0` on the paint slot, so
+    // the body panels were shaded as rough metal off a table meant to be scaled to nothing.
+    //
+    // A material with no texture reads 1 here and gets its factor alone, which is exactly what
+    // the ternary produced — so the untextured case is unchanged and only the discarding stops.
+    vec4 sampledBaseColour =
+        (material.useTextures.x != 0) ? texture(diffuseTexture, transformedTextureCoordinates) : vec4(1.0);
+    vec4 sampledMetallicRoughness =
+        (material.useTextures.z != 0) ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0);
+
+    vec4 albedo = material.baseColour * sampledBaseColour;
+
+    // glTF MASK: under the cutoff there is no surface here at all. Discarded before any lighting
+    // is spent on it, and *not* blended — a cut-out is opaque geometry with holes, which is what
+    // lets a tree card write depth and sort like the trunk it stands in for.
+    if (material.roughMetal.z > 0.0 && albedo.a < material.roughMetal.z) {
+        discard;
+    }
+
     vec3 normalMap = (material.useTextures.y != 0) ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0) : normalize(vec3(0.0, 0.0, 1.0));
-    vec4 specularMap = (material.useTextures.z != 0) ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0, material.roughMetal.x, material.roughMetal.y, 1.0);
+
+    // The other half of a double-sided material. A fragment seen from behind is the surface's other
+    // side, and every consumer of its normal has to agree: flipped here, the direct term stops
+    // lighting the wrong hemisphere and the probe lookup reflects the world the *viewer's* side of
+    // the pane actually faces. This is what a windscreen looked wrong without — from the seat the
+    // camera sees the glass's inner surface, whose unflipped normal still pointed at the sky, so the
+    // probe handed the driver a bright sky sheen off a pane that should be reflecting the dark
+    // cabin's side of the world.
+    if (!gl_FrontFacing) {
+        normalMap = vec3(normalMap.xy, -normalMap.z);
+    }
+    // r stays the sampled channel: it is read as occlusion and glTF states no factor for it.
+    vec4 specularMap = vec4(sampledMetallicRoughness.r,
+                            material.roughMetal.x * sampledMetallicRoughness.g,
+                            material.roughMetal.y * sampledMetallicRoughness.b,
+                            1.0);
     vec3 colour = ads(albedo, specularMap, normalMap);
 
     fragColor = vec4(colour, albedo.a);

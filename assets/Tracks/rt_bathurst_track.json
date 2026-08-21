@@ -1,0 +1,1212 @@
+{
+  "schema": "ac-car-data/track-manifest/1",
+  "units": "metres",
+  "units_note": "Every position, distance and bound in this file is in METRES, and so is the geometry in the .glb beside it — unchanged from the Assetto Corsa source. Physics is SI and consumes both as they are; a renderer whose world unit is 0.1 m places the asset at scale 10. Nothing here has been pre-scaled for either.",
+  "axes": "right-handed, +X left, +Y up, +Z forward — the same convention as glTF, unconverted",
+  "track": {
+    "id": "rt_bathurst",
+    "name": "Bathurst (Mount Panorama)",
+    "layout": null,
+    "country": "Australia",
+    "source": "/home/dominic-asley/Downloads/asw-bathurst-mount-panorama/rt_bathurst"
+  },
+  "asset": {
+    "file": "rt_bathurst_track.glb",
+    "meshes": 74,
+    "triangles": 615197,
+    "triangles_by_surface": {
+      "ROAD": 435948,
+      "EDGE": 86874,
+      "KERB": 41748,
+      "GRASS": 36547,
+      "WALL_BATHURST_TOTAL": 7104,
+      "CUT": 2544,
+      "PITLANE": 2338,
+      "SAND": 2094
+    },
+    "triangles_dropped": {},
+    "faces_flipped_to_match_their_normals": {
+      "EDGE": 1,
+      "GRASS": 48
+    },
+    "models": [
+      "bathurst_mesh.kn5"
+    ]
+  },
+  "spawn": {
+    "source": "ai/fast_lane.ai, point 0",
+    "yaw_convention": "yaw is the right-handed rotation about +Y that takes +Z onto the heading, i.e. yaw = atan2(direction.x, direction.z) and direction = (sin yaw, 0, cos yaw)",
+    "position": [
+      270.0022888183594,
+      29.591659545898438,
+      -562.1807861328125
+    ],
+    "direction": [
+      -0.98820654,
+      0.0,
+      -0.15312688
+    ],
+    "yaw_degrees": -98.80818,
+    "heading_span_m": 10.862,
+    "heading_span_points": 9,
+    "ai_tangent_yaw_degrees": -99.00062,
+    "ai_tangent_disagreement_degrees": 0.19244,
+    "distance_to_left_edge_m": 9.9788,
+    "distance_to_right_edge_m": 1.0415,
+    "track_width_m": 11.0203,
+    "surface_under_spawn": "ROAD",
+    "surface_height_m": 28.77148,
+    "ai_line_height_above_surface_m": 0.82018,
+    "surface_normal": [
+      0.047258,
+      0.998287,
+      -0.034504
+    ],
+    "surface_slope_degrees": 3.3545,
+    "position_on_surface": [
+      270.0022888183594,
+      28.77148,
+      -562.1807861328125
+    ],
+    "warning_off_centre": "point 0 of fast_lane.ai sits 1.0415 m from the right edge and 9.9788 m from the left, on an 11.0203 m road. That is a racing line hugging one side, not the middle of the track — a 1.8 m wide car placed here has its wheels on the paint. Use grid.slots for a start-line position."
+  },
+  "grid": {
+    "source": "AC_START_n dummies in the track models",
+    "note": "These are the authored grid slots and carry a heading of their own. They are the better spawn: an AI line is a *racing* line, so its first point sits wherever the fast way through the first corner begins, which is usually hard against one edge.",
+    "slots": [
+      {
+        "index": 0,
+        "position": [
+          121.23581,
+          33.68667,
+          -583.34558
+        ],
+        "position_on_surface": [
+          121.23581,
+          31.21522,
+          -583.34558
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.47145
+      },
+      {
+        "index": 1,
+        "position": [
+          122.28194,
+          33.60376,
+          -588.51135
+        ],
+        "position_on_surface": [
+          122.28194,
+          31.11862,
+          -588.51135
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.48514
+      },
+      {
+        "index": 2,
+        "position": [
+          132.84029,
+          33.56948,
+          -581.31903
+        ],
+        "position_on_surface": [
+          132.84029,
+          31.19675,
+          -581.31903
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.37273
+      },
+      {
+        "index": 3,
+        "position": [
+          134.07028,
+          33.49042,
+          -586.26605
+        ],
+        "position_on_surface": [
+          134.07028,
+          31.08885,
+          -586.26605
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.40156
+      },
+      {
+        "index": 4,
+        "position": [
+          144.82327,
+          33.46398,
+          -579.11279
+        ],
+        "position_on_surface": [
+          144.82327,
+          31.14151,
+          -579.11279
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.32247
+      },
+      {
+        "index": 5,
+        "position": [
+          145.84677,
+          33.3841,
+          -584.14429
+        ],
+        "position_on_surface": [
+          145.84677,
+          31.01288,
+          -584.14429
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.37121
+      },
+      {
+        "index": 6,
+        "position": [
+          156.63475,
+          33.33886,
+          -576.78357
+        ],
+        "position_on_surface": [
+          156.63475,
+          31.09563,
+          -576.78357
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.24322
+      },
+      {
+        "index": 7,
+        "position": [
+          157.66176,
+          33.25809,
+          -581.82501
+        ],
+        "position_on_surface": [
+          157.66176,
+          30.96518,
+          -581.82501
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.29291
+      },
+      {
+        "index": 8,
+        "position": [
+          168.3521,
+          33.22852,
+          -574.46002
+        ],
+        "position_on_surface": [
+          168.3521,
+          31.10075,
+          -574.46002
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.12777
+      },
+      {
+        "index": 9,
+        "position": [
+          169.34669,
+          33.14408,
+          -579.58765
+        ],
+        "position_on_surface": [
+          169.34669,
+          30.96121,
+          -579.58765
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.18287
+      },
+      {
+        "index": 10,
+        "position": [
+          180.36108,
+          33.34971,
+          -572.26917
+        ],
+        "position_on_surface": [
+          180.36108,
+          31.14211,
+          -572.26917
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.2076
+      },
+      {
+        "index": 11,
+        "position": [
+          181.35718,
+          33.26681,
+          -577.3349
+        ],
+        "position_on_surface": [
+          181.35718,
+          30.995,
+          -577.3349
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.27181
+      },
+      {
+        "index": 12,
+        "position": [
+          192.61592,
+          33.31399,
+          -569.9425
+        ],
+        "position_on_surface": [
+          192.61592,
+          31.1594,
+          -569.9425
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.15459
+      },
+      {
+        "index": 13,
+        "position": [
+          193.54576,
+          33.23492,
+          -575.03955
+        ],
+        "position_on_surface": [
+          193.54576,
+          30.99666,
+          -575.03955
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.23825
+      },
+      {
+        "index": 14,
+        "position": [
+          204.69899,
+          33.14737,
+          -567.48608
+        ],
+        "position_on_surface": [
+          204.69899,
+          31.01649,
+          -567.48608
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.13088
+      },
+      {
+        "index": 15,
+        "position": [
+          205.67245,
+          33.06747,
+          -572.51752
+        ],
+        "position_on_surface": [
+          205.67245,
+          30.90416,
+          -572.51752
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.16331
+      },
+      {
+        "index": 16,
+        "position": [
+          216.36038,
+          32.84598,
+          -565.20685
+        ],
+        "position_on_surface": [
+          216.36038,
+          30.74099,
+          -565.20685
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.10499
+      },
+      {
+        "index": 17,
+        "position": [
+          217.23723,
+          32.76522,
+          -570.29822
+        ],
+        "position_on_surface": [
+          217.23723,
+          30.63959,
+          -570.29822
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.12563
+      },
+      {
+        "index": 18,
+        "position": [
+          228.32785,
+          32.67138,
+          -562.78326
+        ],
+        "position_on_surface": [
+          228.32785,
+          30.39649,
+          -562.78326
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.27488
+      },
+      {
+        "index": 19,
+        "position": [
+          229.3725,
+          32.58695,
+          -567.91089
+        ],
+        "position_on_surface": [
+          229.3725,
+          30.28957,
+          -567.91089
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.29738
+      },
+      {
+        "index": 20,
+        "position": [
+          240.12854,
+          32.36877,
+          -560.65692
+        ],
+        "position_on_surface": [
+          240.12854,
+          29.98587,
+          -560.65692
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.38291
+      },
+      {
+        "index": 21,
+        "position": [
+          241.17467,
+          32.28585,
+          -565.77271
+        ],
+        "position_on_surface": [
+          241.17467,
+          29.89829,
+          -565.77271
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.38756
+      },
+      {
+        "index": 22,
+        "position": [
+          252.03319,
+          32.03312,
+          -558.33032
+        ],
+        "position_on_surface": [
+          252.03319,
+          29.53999,
+          -558.33032
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.49313
+      },
+      {
+        "index": 23,
+        "position": [
+          253.06306,
+          31.95408,
+          -563.47736
+        ],
+        "position_on_surface": [
+          253.06306,
+          29.49186,
+          -563.47736
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.46221
+      },
+      {
+        "index": 24,
+        "position": [
+          263.56592,
+          31.6443,
+          -556.07397
+        ],
+        "position_on_surface": [
+          263.56592,
+          29.09024,
+          -556.07397
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.55406
+      },
+      {
+        "index": 25,
+        "position": [
+          264.58942,
+          31.56441,
+          -561.10547
+        ],
+        "position_on_surface": [
+          264.58942,
+          29.05436,
+          -561.10547
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.51005
+      },
+      {
+        "index": 26,
+        "position": [
+          275.6275,
+          31.2445,
+          -553.6947
+        ],
+        "position_on_surface": [
+          275.6275,
+          28.60046,
+          -553.6947
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.64403
+      },
+      {
+        "index": 27,
+        "position": [
+          276.65454,
+          31.16373,
+          -558.78619
+        ],
+        "position_on_surface": [
+          276.65454,
+          28.5536,
+          -558.78619
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.61013
+      },
+      {
+        "index": 28,
+        "position": [
+          287.04465,
+          30.57658,
+          -551.42114
+        ],
+        "position_on_surface": [
+          287.04465,
+          28.10235,
+          -551.42114
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.47423
+      },
+      {
+        "index": 29,
+        "position": [
+          287.93918,
+          30.49213,
+          -556.54883
+        ],
+        "position_on_surface": [
+          287.93918,
+          28.0494,
+          -556.54883
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.44274
+      },
+      {
+        "index": 30,
+        "position": [
+          299.53079,
+          30.12676,
+          -549.15765
+        ],
+        "position_on_surface": [
+          299.53079,
+          27.51073,
+          -549.15765
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.61603
+      },
+      {
+        "index": 31,
+        "position": [
+          300.55426,
+          30.04688,
+          -554.18909
+        ],
+        "position_on_surface": [
+          300.55426,
+          27.45635,
+          -554.18909
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.59053
+      },
+      {
+        "index": 32,
+        "position": [
+          310.31903,
+          29.70338,
+          -547.00287
+        ],
+        "position_on_surface": [
+          310.31903,
+          27.00576,
+          -547.00287
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.69762
+      },
+      {
+        "index": 33,
+        "position": [
+          311.34607,
+          29.62262,
+          -552.09442
+        ],
+        "position_on_surface": [
+          311.34607,
+          26.98109,
+          -552.09442
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.64153
+      },
+      {
+        "index": 34,
+        "position": [
+          322.27423,
+          29.33668,
+          -544.63446
+        ],
+        "position_on_surface": [
+          322.27423,
+          26.43453,
+          -544.63446
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.90215
+      },
+      {
+        "index": 35,
+        "position": [
+          323.16879,
+          29.25223,
+          -549.76215
+        ],
+        "position_on_surface": [
+          323.16879,
+          26.44857,
+          -549.76215
+        ],
+        "direction": [
+          -0.98480767,
+          -1.6e-07,
+          -0.17364866
+        ],
+        "yaw_degrees": -100.00003,
+        "surface": "ROAD",
+        "height_above_surface_m": 2.80366
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "index": 0,
+      "key": "ROAD",
+      "friction": 0.98,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "NULL",
+      "triangles": 435948,
+      "appearance": {
+        "base_color": [
+          0.07,
+          0.07,
+          0.074
+        ],
+        "roughness": 0.72,
+        "note": "dry asphalt, slightly cool; a rubbered-in racing line needs a texture",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 1,
+      "key": "EDGE",
+      "friction": 0.96,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "NULL",
+      "triangles": 86874,
+      "appearance": {
+        "base_color": [
+          0.09,
+          0.089,
+          0.09
+        ],
+        "roughness": 0.78,
+        "note": "the apron just off the racing surface; lighter so the track edge reads",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 2,
+      "key": "KERB",
+      "friction": 0.96,
+      "damping": 0.001,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.1,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.05,
+      "vibration_length": 0.03,
+      "wav": "KERB.WAV",
+      "ff_effect": "0",
+      "triangles": 41748,
+      "appearance": {
+        "base_color": [
+          0.34,
+          0.055,
+          0.045
+        ],
+        "roughness": 0.45,
+        "note": "painted kerb; one flat red stands in for red/white stripes, and paint is glossy",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 3,
+      "key": "PITLANE",
+      "friction": 0.95,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": true,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "0",
+      "triangles": 2338,
+      "appearance": {
+        "base_color": [
+          0.115,
+          0.113,
+          0.108
+        ],
+        "roughness": 0.8,
+        "note": "concrete-ish pit surface, lighter and duller than the road",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 4,
+      "key": "LINES",
+      "friction": 0.95,
+      "damping": 0.001,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "0",
+      "triangles": 0,
+      "appearance": {
+        "base_color": [
+          0.62,
+          0.62,
+          0.6
+        ],
+        "roughness": 0.5,
+        "note": "road paint — off-white, not paper-white",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 5,
+      "key": "GRASS",
+      "friction": 0.72,
+      "damping": 0.005,
+      "is_valid_track": false,
+      "is_pitlane": false,
+      "dirt_additive": 1.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.05,
+      "sin_length": 0.5,
+      "vibration_gain": 0.2,
+      "vibration_length": 0.6,
+      "wav": "grass.wav",
+      "ff_effect": "1",
+      "triangles": 36547,
+      "appearance": {
+        "base_color": [
+          0.05,
+          0.095,
+          0.032
+        ],
+        "roughness": 0.92,
+        "note": "grass is darker and less saturated than it looks in memory",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 6,
+      "key": "SAND",
+      "friction": 0.9,
+      "damping": 0.05,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.5,
+      "black_flag_time": 0.0,
+      "sin_height": 0.01,
+      "sin_length": 2.0,
+      "vibration_gain": 0.1,
+      "vibration_length": 0.2,
+      "wav": "SAND.wav",
+      "ff_effect": "1",
+      "triangles": 2094,
+      "appearance": {
+        "base_color": [
+          0.24,
+          0.21,
+          0.16
+        ],
+        "roughness": 0.95,
+        "note": "gravel trap; warm and by far the brightest thing on the ground",
+        "metallic": 0.0
+      }
+    },
+    {
+      "index": 7,
+      "key": "CUT",
+      "friction": 0.95,
+      "damping": 0.0,
+      "is_valid_track": false,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "NULL",
+      "triangles": 2544,
+      "appearance": {
+        "base_color": [
+          0.078,
+          0.075,
+          0.07
+        ],
+        "roughness": 0.85,
+        "note": "track-limit surface — asphalt-like, and off the racing line by definition",
+        "metallic": 0.0
+      }
+    }
+  ],
+  "barriers": [
+    {
+      "key": "WALL_BATHURST_TOTAL",
+      "triangles": 7104,
+      "is_drivable": false,
+      "note": "collision geometry with no surfaces.ini entry; it stops a car but has no friction",
+      "appearance": {
+        "base_color": [
+          0.28,
+          0.28,
+          0.275
+        ],
+        "roughness": 0.85,
+        "note": "barrier concrete — a wall is collision geometry, not a surface a car drives on",
+        "metallic": 0.0
+      }
+    }
+  ],
+  "line": {
+    "file": "fast_lane.ai",
+    "length_m": 6179.469,
+    "points": 5148,
+    "elevation": {
+      "min_m": 25.547,
+      "max_m": 199.925,
+      "range_m": 174.378
+    },
+    "height_above_surface_m": {
+      "note": "An AC AI line is recorded at the car's own reference height, not at the tarmac. Take a y from it and the car starts that far in the air.",
+      "samples": 123,
+      "min": 0.2773,
+      "median": 0.7861,
+      "max": 0.974
+    }
+  },
+  "bounds": {
+    "note": "world bounding box of the exported geometry, metres",
+    "min": [
+      -995.9589,
+      21.0242,
+      -666.9969
+    ],
+    "max": [
+      507.8211,
+      211.7445,
+      1545.3876
+    ],
+    "size": [
+      1503.78,
+      190.7203,
+      2212.3845
+    ]
+  },
+  "audit": {
+    "GRASS": {
+      "triangles": 36547,
+      "winding_agrees_with_normals": 36547,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 36544,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 0.999918,
+      "faces_line_fraction": null
+    },
+    "PITLANE": {
+      "triangles": 2338,
+      "winding_agrees_with_normals": 2338,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 2338,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 1.0,
+      "faces_line_fraction": null
+    },
+    "EDGE": {
+      "triangles": 86874,
+      "winding_agrees_with_normals": 86874,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 86865,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 0.999896,
+      "faces_line_fraction": null
+    },
+    "ROAD": {
+      "triangles": 435948,
+      "winding_agrees_with_normals": 435948,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 435948,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 1.0,
+      "faces_line_fraction": null
+    },
+    "SAND": {
+      "triangles": 2094,
+      "winding_agrees_with_normals": 2094,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 2094,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 1.0,
+      "faces_line_fraction": null
+    },
+    "KERB": {
+      "triangles": 41748,
+      "winding_agrees_with_normals": 41748,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 41748,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 1.0,
+      "faces_line_fraction": null
+    },
+    "CUT": {
+      "triangles": 2544,
+      "winding_agrees_with_normals": 2544,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 2544,
+      "faces_line": 0,
+      "faces_away": 0,
+      "is_barrier": false,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 1.0,
+      "faces_line_fraction": null
+    },
+    "WALL_BATHURST_TOTAL": {
+      "triangles": 7104,
+      "winding_agrees_with_normals": 7104,
+      "winding_disagrees": 0,
+      "degenerate": 0,
+      "upward": 390,
+      "faces_line": 6554,
+      "faces_away": 550,
+      "is_barrier": true,
+      "winding_agrees_fraction": 1.0,
+      "upward_fraction": 0.054899,
+      "faces_line_fraction": 0.922579
+    }
+  }
+}

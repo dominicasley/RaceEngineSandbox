@@ -26,8 +26,9 @@ layout(set = SET_DRAW, binding = 0) uniform DrawData {
     mat4 localToScreen;
     mat4 normalMatrix;
     ivec4 animated;
-    mat4 jointTransforms[MAX_JOINTS];
 } draw;
+// No JointData block: the palette is a binding of its own now rather than a tail of this one, so a
+// sky that cannot be skinned no longer has to declare it to keep the std140 layout honest.
 
 layout(location = 0) out vec3 textureCoordinates;
 
