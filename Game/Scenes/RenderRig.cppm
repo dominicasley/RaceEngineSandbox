@@ -106,7 +106,7 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
                            engine.resource().loadTextFileAsync("assets/Shaders/AoBlurFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/BloomDownsampleFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/BloomUpsampleFragmentShader.glsl"),
-                           engine.resource().loadTextFileAsync("assets/Luts/MoodyFilm.cube"),
+                           engine.resource().loadTextFileAsync("assets/Luts/CinematicGrade.cube"),
                            engine.resource().loadModelAsync("assets/Models/SkyBox/SkyBox.glb"),
                            engine.resource().loadTextFileAsync("assets/Shaders/SkyboxVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/SkyboxFragmentShader.glsl"),

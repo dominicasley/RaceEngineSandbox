@@ -83,7 +83,7 @@ public:
     // Before `start`. The reference stays good for the life of the simulation — the cars are held
     // behind pointers precisely so that a second one cannot move the first out from under whoever
     // is watching it.
-    SimulatedCar& add(const glm::dvec3& grid, double heading, DriverChoice driver);
+    SimulatedCar& add(const glm::dvec3& grid, double heading, DriverChoice driver, double beltBridgingLength);
 
     // Once every body is placed. Nothing ticks until this is called, so a half-built world is never
     // stepped — the same rule a scene keeps when it registers its update callback last.
@@ -162,9 +162,10 @@ Simulation::~Simulation()
     stop();
 }
 
-SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, const DriverChoice driver)
+SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, const DriverChoice driver,
+                              const double beltBridgingLength)
 {
-    cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver));
+    cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver, beltBridgingLength));
 
     return *cars.back();
 }
