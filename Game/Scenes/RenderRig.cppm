@@ -1,7 +1,6 @@
 module;
 
 #include <expected>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -33,7 +32,7 @@ export template <typename T> T orThrow(std::expected<T, std::string> result)
 {
     if (!result)
     {
-        throw std::runtime_error(result.error());
+        raceengine::fail(result.error());
     }
 
     return std::move(result).value();
@@ -119,7 +118,7 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
 
     if (!loaded)
     {
-        throw std::runtime_error(loaded.error());
+        raceengine::fail(loaded.error());
     }
 
     auto [presentationVert, presentationFrag, vert, pbrFragmentShader, depthVertexShader, depthFragmentShader,

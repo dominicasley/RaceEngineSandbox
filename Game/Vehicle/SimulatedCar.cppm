@@ -12,7 +12,6 @@ module;
 #include <mutex>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -412,7 +411,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     auto built = raceengine::golfGtiMk7();
     if (!built)
     {
-        throw std::runtime_error(built.error());
+        raceengine::fail(built.error());
     }
 
     setup = std::move(built).value();
@@ -455,7 +454,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     state.chassis.position = grid + glm::dvec3(0.0, 1.0, 0.0);
     if (const auto probed = raceengine::stepVehicle(setup, state, {}, raceengine::noDriveTorque, world, 1e-6); !probed)
     {
-        throw std::runtime_error(probed.error());
+        raceengine::fail(probed.error());
     }
 
     const auto centreOfMass = state.chassis.centreOfMass;
@@ -687,7 +686,7 @@ void SimulatedCar::tick(const double deltaTime)
         raceengine::stepDriveline(driveline, drivelineState, speeds, inertias, lastRoadTorques, input, deltaTime);
     if (!driven)
     {
-        throw std::runtime_error(driven.error());
+        raceengine::fail(driven.error());
     }
 
     auto wheelTorques = driven->wheel;
@@ -712,7 +711,7 @@ void SimulatedCar::tick(const double deltaTime)
         // Nothing here is a runtime condition: the setup was swept across its own travel at load
         // time and the linkage is clamped inside that range every tick, so a solve that fails is a
         // defect. It goes to main's boundary rather than being carried on from.
-        throw std::runtime_error(stepped.error());
+        raceengine::fail(stepped.error());
     }
 
     lastRoadTorques = raceengine::roadTorques(stepped.value());

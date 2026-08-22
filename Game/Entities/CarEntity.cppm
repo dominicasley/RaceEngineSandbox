@@ -1,6 +1,5 @@
 module;
 
-#include <stdexcept>
 #include <utility>
 
 export module osr.game:CarEntity;
@@ -26,7 +25,7 @@ public:
         auto loaded = load(engine);
         if (!loaded)
         {
-            throw std::runtime_error(loaded.error());
+            raceengine::fail(loaded.error());
         }
 
         const auto model = std::move(loaded).value();

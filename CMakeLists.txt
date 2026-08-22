@@ -35,6 +35,11 @@ target_sources(OpenStreetRace PRIVATE
 
 find_package(spdlog CONFIG REQUIRED)
 
+# No precompiled header here either, and for the same reason: this target is eighteen module
+# interface units and one plain translation unit, and clang-19 segfaults building module units
+# against a PCH. It would gain the most of any target if it worked — every unit here imports
+# `raceengine`. See RaceEngine/CMakeLists.txt and docs/build-times.md; retest on clang-20+.
+
 target_link_libraries(OpenStreetRace Engine)
 target_link_libraries(OpenStreetRace spdlog::spdlog)
 target_link_libraries(OpenStreetRace raceengine_warnings)

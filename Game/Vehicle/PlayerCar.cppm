@@ -7,7 +7,6 @@ module;
 #include <fstream>
 #include <iterator>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -265,7 +264,7 @@ void PlayerCar::reloadSetupIfChanged()
     auto rebuilt = raceengine::golfGtiMk7();
     if (!rebuilt)
     {
-        throw std::runtime_error(rebuilt.error());
+        raceengine::fail(rebuilt.error());
     }
 
     auto next = CarTune{.setup = std::move(rebuilt).value(), .driveline = raceengine::golfGtiMk7Driveline()};
