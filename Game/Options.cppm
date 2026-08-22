@@ -1,5 +1,6 @@
 module;
 
+#include <cstddef>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,34 @@ export struct RunOptions
     SceneChoice scene = SceneChoice::Circuit;
     CameraChoice camera = CameraChoice::Chase;
     DriverChoice driver = DriverChoice::Driver;
+
+    // Where to write the rack trace on the way out, if anywhere. Empty is the default and means the
+    // attended behaviour: `rack-exit.csv` beside the binary after a session with a wheel in it, and
+    // nothing at all from a gate.
+    //
+    // **It exists because the attended rule makes the trace unrepeatable, and a before-and-after
+    // needs a repeatable one.** A driver's session is the right artefact for "the wheel did
+    // something odd" and the wrong one for "did this change move the steering", because no two of
+    // them drive the same lap. Named alongside `OSR_DRIVE=launch` and `RACEENGINE_DUMP_FRAME_AT`,
+    // this dumps the scripted run's own trace, which is a function of the tick count and of nothing
+    // else — the same file on any machine, before and after a change.
+    std::string rackTrace;
+
+    // How far along the tyre's belt a load spreads, in **millimetres**, or negative to leave the car's
+    // own figure alone. `OSR_BELT_MM`.
+    //
+    // **A seat knob, and it is here for one session rather than forever.** The enveloping model is a
+    // single number and its right value is a question about how a kerb should feel, which is not a
+    // question any measurement in this workspace can answer — so it is exposed rather than guessed at,
+    // and Dominic can walk it up and down inside one drive instead of one value per rebuild.
+    // Millimetres because that is the unit the choice is being made in; everything below Physics is SI
+    // and this is converted at the seam.
+    //
+    // It is deliberately outside the cross-variable validation the other knobs get: those three refuse
+    // combinations that do not exist, and this one has no partner to contradict. What it *is* checked
+    // for is being a number and being sane, because a typo that silently read as zero would look
+    // exactly like "the belt does nothing".
+    double beltBridgingMillimetres = -1.0;
 };
 
 export [[nodiscard]] RunOptions runOptions();
@@ -144,13 +173,83 @@ namespace
                              "'. It takes 'driver' or 'launch'.");
 }
 
+[[nodiscard]] std::string rackTrace(const SceneChoice chosen)
+{
+    auto value = setting("OSR_DUMP_RACK");
+    if (value.empty())
+    {
+        return value;
+    }
+
+    // The apron's car is a transform: there is no vehicle, no steering rack and nothing publishing
+    // a torque, so the file this asked for would be written empty or not at all. Refused rather
+    // than ignored, for the reason every other cross-variable check here is — a run that quietly
+    // produced nothing would be read as "the change moved no torque".
+    if (chosen == SceneChoice::Apron)
+    {
+        throw std::runtime_error("OSR_DUMP_RACK asks for the apron's rack trace, and the apron has no rack: its car "
+                                 "is placed rather than simulated.");
+    }
+
+    return value;
+}
+
+[[nodiscard]] double beltBridgingMillimetres()
+{
+    const auto value = setting("OSR_BELT_MM");
+    if (value.empty())
+    {
+        return -1.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto millimetres = 0.0;
+
+    try
+    {
+        millimetres = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_BELT_MM is not a number: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_BELT_MM is not a number: '" + value + "'.");
+    }
+
+    // Zero is meaningful and is the bed of independent springs, so it is allowed. Negative is not,
+    // because negative is this option's own "leave it alone" and a caller cannot mean both.
+    if (millimetres < 0.0)
+    {
+        throw std::runtime_error("OSR_BELT_MM cannot be negative: '" + value +
+                                 "'. Zero is the uncoupled bed; leave it unset to use the car's own figure.");
+    }
+
+    // A belt that spreads a load further than the contact patch is long is not a tyre, and past about
+    // this the solver's fixed sweep count stops converging as well — so it is refused rather than
+    // quietly under-solved. 200 mm is already more than the patch is wide.
+    if (millimetres > 200.0)
+    {
+        throw std::runtime_error("OSR_BELT_MM is longer than the contact patch: '" + value +
+                                 "'. The fixed iteration budget does not converge past about 200.");
+    }
+
+    return millimetres;
+}
+
 } // namespace
 
 RunOptions runOptions()
 {
     const auto chosen = scene();
 
-    return RunOptions{.scene = chosen, .camera = camera(chosen), .driver = driver(chosen)};
+    return RunOptions{.scene = chosen,
+                      .camera = camera(chosen),
+                      .driver = driver(chosen),
+                      .rackTrace = rackTrace(chosen),
+                      .beltBridgingMillimetres = beltBridgingMillimetres()};
 }
 
 } // namespace osr

@@ -101,10 +101,10 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // The simulation, with the circuit's surfaces in it. Driven a tick at a time under a capture and
     // free-running otherwise — the same test `Engine::frameDelta` makes, because it is the same
     // question: is this run's clock the frame number or the wall.
-    simulation.emplace(engine,
-                       orThrow(raceengine::PhysicsWorld::create(
-                           orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))),
-                       std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
+    simulation.emplace(
+        engine,
+        orThrow(raceengine::PhysicsWorld::create(orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))),
+        std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
 
     // Faster film, and it is not a look — it is what stops the meter running out of shutter.
     //
@@ -222,8 +222,9 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = gridSlots.front();
-    simulatedCar = &simulation->add(slot.position, glm::radians(slot.yaw), options.driver);
-    player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel());
+    simulatedCar = &simulation->add(slot.position, glm::radians(slot.yaw), options.driver,
+                                    0.001 * options.beltBridgingMillimetres);
+    player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.
     //

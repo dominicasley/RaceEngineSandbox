@@ -7,10 +7,13 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -49,7 +52,7 @@ export struct CarSnapshot
     std::int64_t ticks = 0;
 };
 
-// A car re-specified from a setup sheet: the two halves the sheet is allowed to move, built whole on
+// A car re-specified from a setup sheet: the halves the sheet is allowed to move, built whole on
 // the main thread and handed over.
 //
 // Built there rather than here because building one parses a file, allocates a torque curve and two
@@ -59,6 +62,10 @@ export struct CarTune
 {
     raceengine::VehicleSetup setup;
     raceengine::DrivelineSetup driveline;
+    // The pedal cue's thresholds ride along whole rather than as an overlay, so the rebuild-fresh
+    // rule costs the sheet's reader nothing: absent keys were already resolved to the defaults on
+    // the main thread.
+    raceengine::PedalFeedbackSetup pedals{};
 };
 
 // The tick half of the car the driver is in: the vehicle model, the driveline that turns a key into
@@ -109,6 +116,12 @@ export class SimulatedCar
     const raceengine::PhysicsWorld& world;
 
     raceengine::VehicleSetup setup;
+
+    // This session's `OSR_BELT_MM`, in metres, or negative for "the car's own figure". Held for the
+    // object's life rather than consumed at construction, because a setup sheet lands a whole fresh
+    // setup and would otherwise wipe it — see `stampBeltOverride`.
+    double beltBridgingOverride = -1.0;
+
     raceengine::VehicleState state;
     raceengine::DrivelineSetup driveline;
     raceengine::DrivelineState drivelineState;
@@ -129,6 +142,10 @@ export class SimulatedCar
     // together are the pinion radius that turns a rack force into the newton metres a driver's
     // hands feel.
     raceengine::SteeringRack rack;
+    // The car's own thresholds for the pedal cue, as multiples of the tyre's peak slip. The model's
+    // defaults until the setup sheet says otherwise — the `pedal.*` keys arrive through `takeTune`
+    // with the rest of the sheet, because sensitivity is the driver's dial the way `ffb.gain` is.
+    raceengine::PedalFeedbackSetup pedals{};
     // Where the rack was on the previous tick, so its velocity is a difference and not a field
     // somebody has to remember to keep in step. **This is the number the whole threading change was
     // for.** Differenced across the engine's catch-up burst it came out double on one tick and zero
@@ -137,6 +154,14 @@ export class SimulatedCar
     // fixed-rate clock are two consecutive positions of a rack that is genuinely moving, and one
     // tick is the honest interval between them.
     double previousRackTravel = 0.0;
+    // Whether `previousRackTravel` is a rack position or still the placeholder it was built with.
+    // Zero is a perfectly good rack position, so the difference cannot be told from the value.
+    bool rackTravelSeen = false;
+
+    // The device report that was already there before the first tick, and whether one has been seen.
+    // Anything still carrying this stamp is a report from before the run, not a sample of it.
+    std::uint64_t preRunSampleNanos = 0;
+    bool deviceSampleSeen = false;
 
     DriverChoice driver;
     // Which of the three the controller above is presently shaped for. A wheel switched on halfway
@@ -177,7 +202,7 @@ public:
     // radians — a grid slot states one and an AI line does not, which is most of why the slot is the
     // spawn.
     SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
-                 double heading, DriverChoice driver);
+                 double heading, DriverChoice driver, double beltBridgingLength);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -219,6 +244,41 @@ public:
     // travel rather than a ratio.
     static constexpr double steeringLockToLock = 756.0;
 
+    // This car's electric power steering, stated here beside the rest of its steering box for the
+    // same reason the lock-to-lock is: the vehicle model carries a rack *travel* and the box is
+    // where a ratio, a friction and a motor belong.
+    //
+    // **The level is anchored on one target; the knee and the taper are no longer stated at all.**
+    // The target is 6 N·m at the rim at the cornering limit, against this model's own measured
+    // unassisted 20.04 N·m there (`./EngineTests "[.steering-geometry]"`).
+    //
+    // The two shaping forces used to be constants here — 500 N and 2500 N — and the 2026-08-22
+    // session said what that cost. Measured on Dominic's 201-second Bathurst lap, the assist ratio
+    // bottomed at 0.29 in the 10-20 N·m band, and the outside front's aligning moment peaks at
+    // **17.15 N·m of rack torque** — inside that band. The taper at 2500 N is 26.5 N·m at the rim,
+    // above anything sustained driving reaches, so it never did any work; the boost's own peak sat
+    // at 11.9 N·m, which is the *bottom* of the limit region. The motor was at its most compressive
+    // across the whole of the cue.
+    //
+    // They are **derived** now, by `deriveSteeringAssist` below, from where this car's steering limit
+    // actually falls — which `steeringLimitLoad` and `tyreAligningPeak` compute from the car's own
+    // data, with no seat session and nothing hand-placed. See `assistPlacedAtLimit`.
+    // **The one number left, and it is a torque a driver's arms feel rather than a curve
+    // parameter.** Six newton metres at the rim with the front axle at its limit, against this
+    // model's own unassisted 18.5 N·m there. It was the anchor before and it still is; what changed
+    // is that `peakBoost` is now *solved* from it against the placed shape instead of being a fitted
+    // constant beside it. The two had already drifted once — 2.757 was fitted against a taper that
+    // measurement later showed was doing no work, so the level was carrying a shape nobody ran.
+    static constexpr double assistTargetAtLimit = 6.0;
+
+    // The steering system's own rotational inertia at the rim, kg·m². A 2.5 kg wheel at a 0.185 m
+    // radius of gyration is 0.086 of it; the two front assemblies rotating about their kingpins
+    // add 2 × 0.67/13.80² ≈ 0.007 through the measured steering ratio; the rack referred through a
+    // 10.6 mm pinion is 3e-4 and rounds away. **Read `SteeringRack::steeringInertia` before sizing
+    // anything with it** — the number is the car's and the oscillator it is used on is half the
+    // base's, which is a finding rather than a setting.
+    static constexpr double steeringSystemInertia = 0.093;
+
     // The rate the trace is written at, for whoever reports how long a capture ran.
     static constexpr double telemetryHz = 120.0;
 
@@ -229,8 +289,15 @@ private:
     // channel that only exists when a wheel is attached is a channel nobody can compare a run
     // against.
     void publishRackTorque(const raceengine::VehicleStep& step, double rackTravel, double deltaTime);
+    // The pedals' cue, from the same tick: which wheel has stopped rotating with the road, and under
+    // which foot. Stage one only — nothing here knows a motor exists.
+    void publishPedalFeedback(const raceengine::VehicleStep& step, const raceengine::VehicleInput& input);
     void publishSnapshot();
     void takeTune();
+
+    // Puts this session's `OSR_BELT_MM` back onto whatever setup has just landed. Called from the
+    // constructor and from `takeTune`, which are the only two places a setup arrives.
+    void stampBeltOverride();
 
     [[nodiscard]] double groundSpeed() const
     {
@@ -242,11 +309,99 @@ private:
 
 namespace osr
 {
+namespace
+{
+
+// Where this car's steering limit sits in newtons at the rack, and the assist placed against it.
+//
+// **This is the sandbox's job and not the engine's, for the reason the whole file is arranged
+// around**: it is the only place that sees both modules. `raceengine.physics` knows the tyre and the
+// linkage and can say what the outside front carries at the limit and where its aligning moment
+// peaks; `raceengine.input` knows what a rack force is worth at the rim and how a boost curve is
+// shaped. Neither imports the other — deliberately, see the note at the top of `RackTorque.cppm` —
+// so the conversion between them happens exactly here, where the tick already does it every frame.
+//
+// And it happens *through `steeringRackTorque` itself* rather than through a second copy of the
+// kingpin-and-tie-rod arithmetic. That matters more than it looks: a derivation that re-derived the
+// rack force its own way would be a second statement of the number the tick computes, free to drift
+// from it, and the assist would then be placed against a limit the car does not actually have.
+//
+// The manoeuvre modelled is a steady corner at the car's own limit: both front wheels at the slip
+// angle where the tyre's aligning moment peaks, the outside carrying `steeringLimitLoad` and the
+// inside carrying what is left of the axle. Solved at design ride height and centred rack, because
+// where the *limit* falls is a property of the car rather than of the attitude it reaches it in, and
+// a lock-dependent answer would make the assist a function of the corner being taken.
+[[nodiscard]] std::expected<raceengine::PowerAssist, std::string>
+deriveSteeringAssist(const raceengine::VehicleSetup& setup, const double targetRimTorque)
+{
+    const auto loads = raceengine::steeringLimitLoad(setup);
+    if (!(loads.outside > 0.0))
+    {
+        return std::unexpected("the car states no front axle load to place a steering assist against");
+    }
+
+    const auto& tyre = setup.corners[static_cast<std::size_t>(raceengine::Corner::FrontLeft)].tyre;
+
+    auto corners = std::array<raceengine::SteeredCorner, raceengine::steeredCornerLimit>{};
+
+    for (auto index = std::size_t{0}; index < raceengine::steeredCornerLimit; index++)
+    {
+        const auto& hardpoints = setup.corners[index].hardpoints;
+
+        const auto solved = raceengine::solveCorner(hardpoints, 0.0, 0.0);
+        if (!solved)
+        {
+            return std::unexpected("the steering limit will not solve at design: " + solved.error());
+        }
+
+        // Corner 0 is the front left. A positive demand is a right turn, so the left is the outside
+        // wheel — the same convention `PublishedCars.cppm` reads its steering ratio against, and the
+        // one `outboardSign` states.
+        const auto load = index == 0 ? loads.outside : loads.inside;
+        const auto limit = raceengine::tyreAligningPeak(tyre, load);
+
+        // Lateral and vertical only, and the lateral one acts across the car — +x is the car's left.
+        // Longitudinal force at the patch reaches the rack through the scrub radius too, and on a
+        // real lap it is large: measured on Bathurst the outside front runs |Fx|/Fz between 0.60 and
+        // 0.73 right through the slip range. But *which way* it acts is a property of what the
+        // driver is doing with the throttle and the brakes, not of where the tyre's limit is, and a
+        // per-car constant must not carry one lap's driving style.
+        corners[index] = raceengine::SteeredCorner{.lowerBallJoint = solved->lowerBallJoint,
+                                                   .upperBallJoint = solved->upperBallJoint,
+                                                   .steeringArm = solved->steeringArm,
+                                                   .rackOuter = hardpoints.steeringRackOuter,
+                                                   .contactPatch = solved->contactPatch,
+                                                   .patchNormal = glm::dvec3(0.0, 1.0, 0.0),
+                                                   .tyreForce = glm::dvec3(limit.lateralForce, load, 0.0),
+                                                   .aligningMoment = limit.aligningMoment};
+    }
+
+    // An unassisted rack, so what comes back is the road's own force with no motor in it — which is
+    // exactly the quantity the boost curve is drawn against.
+    auto bare = raceengine::SteeringRack{};
+    bare.travelPerInput = setup.rackTravelPerInput;
+    bare.lockToLockDegrees = 756.0;
+    bare.friction = 0.0;
+    bare.damping = 0.0;
+    bare.assist = raceengine::PowerAssist{};
+
+    const auto atLimit =
+        raceengine::steeringRackTorque(bare, std::span<const raceengine::SteeredCorner>(corners), 0.0, 0.0);
+    if (!atLimit.finite || !(std::abs(atLimit.rackForce) > 0.0))
+    {
+        return std::unexpected("the steering limit came out as no rack force at all");
+    }
+
+    return raceengine::assistPlacedAtLimit(bare, std::abs(atLimit.rackForce), targetRimTorque);
+}
+
+} // namespace
 
 SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
-                           const double heading, const DriverChoice driver) :
+                           const double heading, const DriverChoice driver, const double beltBridgingLength) :
     engine(engine),
     world(world),
+    beltBridgingOverride(beltBridgingLength),
     driveline(raceengine::golfGtiMk7Driveline()),
     steering(keyboardSteering()),
     driver(driver)
@@ -261,9 +416,33 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     }
 
     setup = std::move(built).value();
+    stampBeltOverride();
+
+    // **Zero is not the tyre this car had before the belt**, and the wording says so, because the
+    // obvious reading of an A/B against `OSR_BELT_MM=0` is "with and without E2" and it is not that.
+    // Turning the length off leaves the grid at seven across, so zero is an uncoupled bed sampled at
+    // 7x3 where the pre-E2 car was an uncoupled bed at 3x3, and those read different numbers — the
+    // penetration is a quadrature and the sample count is part of the car's configuration. What zero
+    // isolates is the coupling alone, which is the more useful comparison and the wrong one to
+    // mistake for a revert.
+    engine.log().info("Tyre belt: bridging length {:.0f} mm over a {}x{} patch grid, {} solver sweeps ({}).",
+                      1000.0 * setup.sampling.beltBridgingLength, setup.sampling.across, setup.sampling.along,
+                      setup.sampling.beltIterations,
+                      setup.sampling.beltBridgingLength > 0.0 ? "coupled"
+                                                              : "uncoupled -- the belt only, not a revert to 3x3");
 
     rack.travelPerInput = setup.rackTravelPerInput;
     rack.lockToLockDegrees = steeringLockToLock;
+    rack.steeringInertia = steeringSystemInertia;
+
+    // The motor, placed against this car's own steering limit rather than against two constants.
+    // Fallible in principle and not in practice — the corner has already been solved and validated
+    // by `golfGtiMk7` above — so a failure here is a linkage that stopped solving between one call
+    // and the next, and the honest answer to that is an unassisted rack rather than a guess.
+    if (const auto placed = deriveSteeringAssist(setup, assistTargetAtLimit); placed)
+    {
+        rack.assist = placed.value();
+    }
 
     // Standing a body up means knowing where its own centre of mass sits in its own frame, and the
     // vehicle model is what knows: `stepVehicle` assembles that ledger out of the sprung components
@@ -336,6 +515,37 @@ raceengine::DriverInput SimulatedCar::demand()
     return asked;
 }
 
+void SimulatedCar::stampBeltOverride()
+{
+    // Negative is "leave the car's own figure alone", which is the default and the shipped behaviour.
+    if (beltBridgingOverride < 0.0)
+    {
+        return;
+    }
+
+    setup.sampling.beltBridgingLength = beltBridgingOverride;
+
+    if (beltBridgingOverride <= 0.0)
+    {
+        return;
+    }
+
+    // **The grid has to move with the length.** At three samples across a 0.20 m patch the elements
+    // sit 100 mm apart, and a belt that spreads a load over 30 mm couples essentially nothing at that
+    // spacing — the shear rate comes out at 0.04 of an element's radial rate, and the model is the
+    // uncoupled bed wearing a different name. Seven across puts them 33 mm apart, which is the
+    // coarsest grid that resolves a belt of this length at all. It costs: the contact sampler goes
+    // from about a third of the vehicle tick's 50 microsecond budget to four fifths of it.
+    setup.sampling.across = 7;
+
+    // And so does the sweep count, for a measured reason: projected Gauss-Seidel on this problem
+    // converges more slowly the stiffer the belt. Eight sweeps is within 0.03 N of a
+    // twenty-thousand-sweep reference at 30 mm and twenty-one newtons out at 60. Thirty-two covers
+    // the range this knob accepts. Still a *fixed* count with no early-out, so the run is still
+    // deterministic.
+    setup.sampling.beltIterations = 32;
+}
+
 void SimulatedCar::applyTune(CarTune tune)
 {
     const auto guard = std::lock_guard<std::mutex>(tuneLock);
@@ -356,7 +566,17 @@ void SimulatedCar::takeTune()
     // than reading one somebody else may be writing.
     setup = std::move(pendingTune->setup);
     driveline = std::move(pendingTune->driveline);
+    pedals = pendingTune->pedals;
     pendingTune.reset();
+
+    // **The whole setup arrives, so anything stamped onto the last one is gone.** A tune is built by
+    // rebuilding the car from scratch and re-applying the sheet — deliberately, so that deleting a
+    // line reverts to the car's own number rather than leaving the last value in place — which means
+    // a session override held on this object has to be re-stamped every time one lands, not once at
+    // construction. It cost four laps: `OSR_BELT_MM` was applied in the constructor, the first tune
+    // arrived before the first tick, and every drive ran the shipped tyre while the startup log
+    // cheerfully reported the setting it had been asked for.
+    stampBeltOverride();
 
     // The wheel's own geometry follows the car's. Left behind, an inverted rack would steer the car
     // one way and load the driver's hands the other — a self-centring force pushing *into* the
@@ -399,17 +619,18 @@ CarSnapshot SimulatedCar::snapshot() const
 
 void SimulatedCar::publishSnapshot()
 {
-    const auto next = CarSnapshot{
-        .state = state,
-        .acceleration = smoothedAcceleration,
-        // The tick's own, from the same step the force feedback came from and for the same reason:
-        // the newest thing this tick knows. Derived here rather than shipped as a `VehicleStep` for
-        // the main thread to derive, because this is pure arithmetic over data the tick already has
-        // in registers and the alternative is copying a suspension solution across a lock.
-        .audio = raceengine::deriveCarAudio(driveline, drivelineState, lastDrivelineTorques, state, lastStep, lastInput),
-        .rackDemand = lastInput.steering,
-        .gear = gear,
-        .ticks = ticks};
+    const auto next =
+        CarSnapshot{.state = state,
+                    .acceleration = smoothedAcceleration,
+                    // The tick's own, from the same step the force feedback came from and for the same reason:
+                    // the newest thing this tick knows. Derived here rather than shipped as a `VehicleStep` for
+                    // the main thread to derive, because this is pure arithmetic over data the tick already has
+                    // in registers and the alternative is copying a suspension solution across a lock.
+                    .audio = raceengine::deriveCarAudio(driveline, drivelineState, lastDrivelineTorques, state,
+                                                        lastStep, lastInput),
+                    .rackDemand = lastInput.steering,
+                    .gear = gear,
+                    .ticks = ticks};
 
     auto held = std::unique_lock<std::mutex>(publication, std::try_to_lock);
     if (!held.owns_lock())
@@ -500,10 +721,20 @@ void SimulatedCar::tick(const double deltaTime)
     lastStep = stepped.value();
     lastInput = input;
 
+    // **Filled here rather than in the recording branch, because two things read this frame now.**
+    //
+    // The vehicle tick cannot fill the engine, clutch and gear channels — `:Vehicle` does not import
+    // `:Driveline` and must not — so somebody downstream has to, and until the rack trace started
+    // carrying vehicle state the only reader was the telemetry recorder, which did it on its own
+    // copy. A second reader that took the frame from before this line would have written a flat zero
+    // into `Engine RPM` for the whole session and it would have looked exactly like an idling car.
+    raceengine::fillDrivelineTelemetry(lastTelemetry, drivelineState, lastDrivelineTorques);
+
     // Every tick now, which is the whole point of the clock: a 500 Hz writer sees a fresh value on
     // nearly every output frame instead of one in eight, and `RackFeedback::publishInterval` states
     // a period this publish genuinely keeps.
     publishRackTorque(stepped.value(), input.steering * setup.rackTravelPerInput, deltaTime);
+    publishPedalFeedback(stepped.value(), input);
 
     // Opt-in, because a line a second is noise in a log nobody is reading and the only thing worth
     // having when the car is not going where it is pointed. `OSR_LOG_INPUT=1`.
@@ -536,11 +767,11 @@ void SimulatedCar::tick(const double deltaTime)
 
     if (recording.load() && ticks % telemetryDivider == 0)
     {
-        // The tick's own frame, with the driveline's channels written into it beside the vehicle's,
-        // so a run drops into i2 with the engine and the suspension on the same time base.
+        // The tick's own frame, with the driveline's channels already written into it beside the
+        // vehicle's, so a run drops into i2 with the engine and the suspension on the same time
+        // base. The stamp is this recorder's own, which is why the copy survives.
         auto frame = lastTelemetry;
         frame.time = static_cast<double>(ticks) * deltaTime;
-        raceengine::fillDrivelineTelemetry(frame, drivelineState, lastDrivelineTorques);
 
         const auto guard = std::lock_guard<std::mutex>(recorderLock);
         recorder.record(frame);
@@ -548,6 +779,105 @@ void SimulatedCar::tick(const double deltaTime)
 
     publishSnapshot();
 }
+
+// The pedals' half, and it is the same extraction the rack's is: the caller holds the tick, so the
+// caller pulls the numbers out and hands them over as plain ones.
+//
+// **The cue this produces is the one a steering wheel cannot give.** A locked rear does not reach the
+// steering — there is no trail from an unsteered axle to the driver's hands — and neither does
+// wheelspin. Both reach a foot, because a foot is on the pedal that caused them.
+void SimulatedCar::publishPedalFeedback(const raceengine::VehicleStep& stepped, const raceengine::VehicleInput& input)
+{
+    auto wheels = std::array<raceengine::SlippingWheel, raceengine::cornerCount>{};
+
+    // Which wheels the driveline turns. Only a driven wheel can be spun by the engine, and which
+    // those are is a property of the car rather than of its suspension — the same reason
+    // `applyDrivelineTorques` is called from here and not from inside the vehicle tick.
+    const auto axle = driveline.driven;
+
+    for (auto index = std::size_t{0}; index < raceengine::cornerCount; index++)
+    {
+        const auto& solution = stepped.corners[index];
+        const auto driven =
+            axle == raceengine::DrivenAxle::All || (axle == raceengine::DrivenAxle::Front ? index < 2 : index >= 2);
+
+        wheels[index] = raceengine::SlippingWheel{.slipRatio = solution.contact.slip.slipRatio,
+                                                  // The tyre's own peak, under the load it is at
+                                                  // right now, so the cue moves with the compound
+                                                  // instead of firing at a slip somebody typed.
+                                                  .peakSlipRatio = solution.contact.tyre.longitudinalPeakSlip,
+                                                  .load = solution.forces.tireVertical,
+                                                  .inContact = solution.patch.inContact,
+                                                  .driven = driven};
+    }
+
+    // A quarter of the car's weight: the load a wheel carries standing still, which is what the
+    // minimum load share is a share *of*.
+    const auto share = 0.25 * state.chassis.mass * 9.80665;
+
+    engine.forceFeedback().publishPedals(
+        raceengine::derivePedalFeedback(pedals, wheels, input.brake, input.throttle, share));
+}
+
+// The tick's telemetry, as the trace carries it.
+//
+// **A copy and not a computation**, which is the property the whole arrangement rests on. Every
+// number here is worked out in exactly one place — the physics tick — and the heading-invariance
+// gate stands over that place, so these columns are covered by it without a second gate and without
+// a second chance to disagree. The day this function starts deriving something is the day that stops
+// being true, which is why it does not: pneumatic trail is `Mz/Fy` and weight transfer is a
+// difference of loads, and both belong to whoever plots the file.
+//
+// Units stay SI. `rackTorqueToCsv` converts once, at the boundary, like `telemetryToCsv` does.
+namespace
+{
+
+[[nodiscard]] raceengine::VehicleTrace vehicleTraceOf(const raceengine::TelemetryFrame& frame)
+{
+    auto trace = raceengine::VehicleTrace{
+        .centreOfMassX = frame.position.x,
+        .centreOfMassZ = frame.position.z,
+        .heading = frame.yaw,
+        .speed = glm::length(frame.velocity),
+        // Body frame, and the roles are the ones `TelemetryFrame::acceleration` states: +x lateral,
+        // +z longitudinal. Copied in that order rather than reasoned about again here.
+        .lateralAcceleration = frame.acceleration.x,
+        .longitudinalAcceleration = frame.acceleration.z,
+        .yawRate = frame.yawRate,
+        .rideHeightFront = frame.rideHeightFront,
+        .rideHeightRear = frame.rideHeightRear,
+        .throttle = frame.throttle,
+        .brake = frame.brake,
+        .clutch = frame.clutch,
+        .gear = frame.gear,
+        .engineSpeed = frame.engineSpeed};
+
+    // By index, both sides. `raceengine::tracedCornerCount` and `raceengine::cornerCount` are the
+    // same four corners in the same order — the input partition cannot name the physics module's
+    // `Corner`, so it states the count itself and this asserts the two have not drifted apart.
+    static_assert(raceengine::tracedCornerCount == raceengine::cornerCount,
+                  "the rack trace's corners are the physics module's corners, in its order");
+
+    for (auto index = std::size_t{0}; index < raceengine::cornerCount; index++)
+    {
+        const auto& wheel = frame.wheels[index];
+
+        trace.wheels[index] = raceengine::WheelTrace{.slipAngle = wheel.slipAngle,
+                                                     .slipRatio = wheel.slipRatio,
+                                                     .verticalLoad = wheel.verticalLoad,
+                                                     .lateralForce = wheel.forceLateral,
+                                                     .longitudinalForce = wheel.forceLongitudinal,
+                                                     .aligningMoment = wheel.aligningMoment,
+                                                     .suspensionTravel = wheel.suspensionTravel,
+                                                     .damperVelocity = wheel.damperVelocity,
+                                                     .contactingSamples = wheel.contactingSamples,
+                                                     .patchDepthSpread = wheel.patchDepthSpread};
+    }
+
+    return trace;
+}
+
+} // namespace
 
 // The whole of the game's side of force feedback, and there is deliberately very little of it: what
 // the engine wants is newton metres at the rim, and everything that turns a tick's result into that
@@ -594,54 +924,97 @@ void SimulatedCar::publishRackTorque(const raceengine::VehicleStep& stepped, con
     // both were working around is that a catch-up burst's ticks all read one device report. A
     // fixed-rate thread has no burst: consecutive ticks are consecutive positions of a rack that is
     // genuinely moving, and one tick is the honest denominator.
-    const auto sampleNanos = engine.input().sampleTimestampNanos();
-    const auto rackVelocity = deltaTime > 0.0 ? (rackTravel - previousRackTravel) / deltaTime : 0.0;
+    // **Nothing on the first tick, because on the first tick there is no previous position.**
+    //
+    // `previousRackTravel` starts at zero and the rack does not: a session that opens with the wheel
+    // anywhere but dead centre differences a real position against a placeholder and calls the
+    // result a velocity. The first seat session opened 14.9 mm off centre and read 5347.9 mm/s,
+    // which the damping term turned into -4995.8 N of rack force and -52.98 N·m of steering torque
+    // on the tick before any of it existed. The safety ramp meant the wheel never felt it — requested,
+    // commanded and delivered were all 0.00 there — so the only thing it damaged was every min and
+    // max taken over the run afterwards.
+    //
+    // Suppressed at the source rather than trimmed off in analysis: a file with one poisoned row is
+    // a file every future reader has to be warned about, and zero is the honest answer to "how fast
+    // is it moving" when only one position has ever been seen.
+    // **The report that was already sitting on the device when the simulation started is not a
+    // sample this run produced**, and it is the other half of the same first-tick artefact.
+    //
+    // A wheel nobody is touching sends nothing at all, so `sampleTimestampNanos` still carries
+    // whatever arrived when the device was opened — which was before a 251 MiB track finished
+    // loading. Measured end to end that read 579.887 ms in the first seat session, against a 10 ms
+    // budget, and it is a perfectly accurate measurement of *startup*. What it is not is a steering
+    // latency, and it lands in the histogram the gain criterion is read off.
+    //
+    // Zero is already this field's word for "no latency is measurable here" — a keyboard, or the
+    // gate's scripted launch — so the stale report is published under it rather than given a special
+    // case downstream. Held by value rather than against a clock: the first genuinely new report has
+    // a different stamp, whenever it comes, and everything from there is measured normally.
+    const auto deviceSampleNanos = engine.input().sampleTimestampNanos();
+
+    if (!deviceSampleSeen)
+    {
+        deviceSampleSeen = true;
+        preRunSampleNanos = deviceSampleNanos;
+    }
+
+    const auto sampleNanos = deviceSampleNanos == preRunSampleNanos ? std::uint64_t{0} : deviceSampleNanos;
+
+    const auto rackVelocity = rackTravelSeen && deltaTime > 0.0 ? (rackTravel - previousRackTravel) / deltaTime : 0.0;
 
     previousRackTravel = rackTravel;
+    rackTravelSeen = true;
 
-    const auto torque = raceengine::steeringRackTorque(rack, corners, rackVelocity);
-
-    // The Mk7's rack is electrically assisted, and the assist is not a nicety — it is what makes
-    // low-speed steering renderable at all. The unassisted rack this derivation answers with is
-    // the honest physics (criterion 10 is checked against it), but a parked car's carcass spring
-    // is about 2.5 N·m per rim degree's worth of rack at it, so ±1.6 mm of travel saturates the
-    // sheet's whole 4 N·m ceiling: the motor becomes a gradient-free bang-bang relay, which the
-    // 2026-08-21 exit traces show as a 10 Hz limit cycle slamming rail to rail — the shake that
-    // wanted the wheel out of Dominic's hands, whose only damping was his grip. The real car does
-    // not feel like that because the real car's EPS absorbs precisely these efforts: parking a
-    // Mk7 is 3–4 N·m at the rim, not 17. Strongest at rest, lightening with speed, which is what
-    // every electric rack's speed map does.
-    constexpr auto assistAtRest = 0.22;
-    constexpr auto assistAtSpeed = 0.55;
-    constexpr auto assistBuildSpeed = 8.0;
     const auto speed = groundSpeed();
-    const auto assisted = assistAtRest + (assistAtSpeed - assistAtRest) * (speed / (speed + assistBuildSpeed));
 
-    // The rack's parking damper, scheduled by the same speed the assist is: the assisted carcass
-    // spring is ~6 N·m/rad at the rim, so a released rim needs about 2·sqrt(K·J) ≈ 0.5 of damping
-    // to glide back to centre instead of shimmying around it — which is what the seat reported at
-    // a standstill — while at speed the driver's own sheet dial (0.1 felt best on a full lap) is
-    // the whole story. Fades over a few metres per second, and rides on the dial rather than
-    // replacing it.
-    constexpr auto parkingDamping = 0.4;
-    constexpr auto parkingFadeSpeed = 5.0;
-    const auto scheduledDamping = parkingDamping * (1.0 - speed / (speed + parkingFadeSpeed));
+    // **Everything the steering knows is in `rack` now, and this line is the whole of it.**
+    //
+    // It used to be four constants and two schedules written between this call and the publish
+    // below — an EPS assist and a parking damper, both applied to every channel on the way out.
+    // That seam is exactly where the three-stage split had no name for anything, so it is where two
+    // hardware-sized numbers ended up living: an assist justified by what fits under the sheet's
+    // ceiling, and a damper sized against an inertia fitted from this base's own limit cycle. See
+    // `PowerAssist` for both accounts. What is left here is assembly and a publish.
+    const auto torque = raceengine::steeringRackTorque(rack, corners, rackVelocity, speed);
+
+    // **The car used to ask for damping here, and it no longer does — the request has moved to
+    // stage two, where device knowledge is allowed to live.**
+    //
+    // The number was 0.4, scheduled down over 5 m/s, and it was justified as 2·√(K·J) for a released
+    // rim returning to centre on the carcass spring. Reckoned honestly for this car, `J` is
+    // `SteeringRack::steeringInertia` — 0.093 kg·m² of rim, column and two front corners — and 2·√(K·J)
+    // is 0.83. But 0.4 was fitted from *this base's* limit cycle, so its `J` was the base's rim, and
+    // the two are 5.5x apart because they are correct about **two different oscillators**.
+    //
+    // Which of them the simulation contains settles it, and the answer is neither: the rack angle is
+    // commanded straight from the demand, so there is no steering degree of freedom anywhere and the
+    // only inertia physically in the loop a damper closes is the motor, belt and rim of whatever is
+    // plugged in. So 0.4 is a **device** parameter that was misfiled as a car one — the same defect
+    // as the assist above wearing different clothes — and shipping 0.83 would have sized a damper
+    // for a mass the simulation does not have. It is `ForceMapping::deviceDamping` now.
+    //
+    // The car's honest steering inertia is kept on the rack for the day it has something to belong
+    // to. That day is a rack with a mass and a compliance under the driver's demand, which is a
+    // vehicle-model addition and is recorded as one — see `docs/post-m2-remediation-brief.md`.
 
     // A stage-one refusal is forwarded as one rather than smoothed into a zero. Zero is a torque and
     // is a perfectly good thing for the wheel to hold; what has happened here is that the physics
     // handed the steering a number that is not one, and the honest answer to that is to let go.
-    // Every published channel carries the assist, so the trace's ratios stay meaningful.
     engine.forceFeedback().publish(raceengine::RackFeedback{
-        .steeringTorque = torque.finite ? torque.steeringTorque * assisted : std::numeric_limits<double>::quiet_NaN(),
-        .rackForce = torque.rackForce * assisted,
-        .tyreRackForce = torque.tyreForce * assisted,
+        // What the driver's hands get is the assisted rack, because that is what is between the
+        // road and the rim in the real car. What the trace keeps beside it is the unassisted one.
+        .steeringTorque = torque.finite ? torque.assistedTorque : std::numeric_limits<double>::quiet_NaN(),
+        .unassistedTorque = torque.steeringTorque,
+        .rackForce = torque.rackForce,
+        .tyreRackForce = torque.tyreForce,
         .rackTravel = rackTravel,
         .rackVelocity = rackVelocity,
         // One simulation tick: what one publish is worth in simulated time, which is the slope the
         // writer's reconstruction may continue. The wall clock cannot say this — see `RackFeedback`.
         .publishInterval = deltaTime,
-        .damping = scheduledDamping,
-        .inputTimestampNanos = sampleNanos});
+        .inputTimestampNanos = sampleNanos,
+        // The tick's own frame, projected. Nothing downstream steers by it.
+        .vehicle = vehicleTraceOf(lastTelemetry)});
 }
 
 } // namespace osr

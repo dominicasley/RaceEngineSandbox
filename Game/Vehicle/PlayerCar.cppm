@@ -9,6 +9,7 @@ module;
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -83,8 +84,13 @@ export class PlayerCar
     bool setupSeen = false;
     bool setupMissingReported = false;
 
+    // `OSR_DUMP_RACK`, or empty. Held rather than read from the environment on the way out, so the
+    // run's whole configuration is settled in `runOptions` where the cross-checks live.
+    std::string rackTracePath;
+
 public:
-    PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& node, RenderableModel& carRenderable);
+    PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& node, RenderableModel& carRenderable,
+              std::string rackTracePath = {});
 
     // An attended session leaves its steering evidence behind without being asked: the last five
     // minutes of the rack trace and the force feedback service's own summary, written beside the
@@ -148,12 +154,13 @@ private:
 namespace osr
 {
 
-PlayerCar::PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& node,
-                     RenderableModel& carRenderable) :
+PlayerCar::PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& node, RenderableModel& carRenderable,
+                     std::string rackTracePath) :
     engine(engine),
     car(car),
     node(node),
-    carRenderable(carRenderable)
+    carRenderable(carRenderable),
+    rackTracePath(std::move(rackTracePath))
 {
     // The sheet this car is tuned by, if there is one. Read on the first update rather than here, so
     // that a file appearing mid-session is picked up on the same path as a file being edited — one
@@ -266,9 +273,19 @@ void PlayerCar::reloadSetupIfChanged()
     raceengine::applyVehicleTune(tune.value(), next.setup);
     raceengine::applyVehicleTune(tune.value(), next.driveline);
 
+    // The pedal cue's thresholds, resolved against the freshly built defaults for the same reason
+    // the setup is rebuilt: a deleted line means the model's own number, not the last one stated.
+    // Applied here rather than by a `SetupFile` overload because the consumer's type lives in the
+    // input layer, which the physics module cannot name.
+    next.pedals.onsetPeaks = tune->pedal.onsetPeaks.value_or(next.pedals.onsetPeaks);
+    next.pedals.brakeFullPeaks = tune->pedal.brakeFullPeaks.value_or(next.pedals.brakeFullPeaks);
+    next.pedals.throttleFullPeaks = tune->pedal.throttleFullPeaks.value_or(next.pedals.throttleFullPeaks);
+
     const auto rackTravel = next.setup.rackTravelPerInput;
     const auto frontSpring = next.setup.corners[0].springRate;
     const auto preload = next.driveline.differential.preload;
+    const auto brakeFull = next.pedals.brakeFullPeaks;
+    const auto throttleFull = next.pedals.throttleFullPeaks;
 
     car.applyTune(std::move(next));
 
@@ -291,14 +308,32 @@ void PlayerCar::reloadSetupIfChanged()
         // `steering.invert`, and "the setting had no effect" and "the setting was never read" are
         // indistinguishable from a line that only says a file was applied.
         engine.log().info("Setup {} applied: rack travel {:+.4f} m per unit, front spring {:.0f} N/m, diff preload "
-                          "{:.0f} N.m, ffb gain {:.2f} ceiling {:.1f} N.m",
+                          "{:.0f} N.m, ffb gain {:.2f} ceiling {:.1f} N.m, pedal full at {:.2f}/{:.1f} peaks",
                           setupPath.string(), rackTravel, frontSpring, preload,
-                          engine.forceFeedback().mapping().gain, engine.forceFeedback().mapping().ceilingTorque);
+                          engine.forceFeedback().mapping().gain, engine.forceFeedback().mapping().ceilingTorque,
+                          brakeFull, throttleFull);
     }
 }
 
 PlayerCar::~PlayerCar()
 {
+    // Asked for by name, so it is written whatever the run is. This is the repeatable half: a
+    // scripted launch under a frame count writes the same trace on any machine, which is what makes
+    // a before-and-after of anything in the steering path a comparison rather than an anecdote.
+    if (!rackTracePath.empty())
+    {
+        const auto scripted = engine.forceFeedback().takeTrace();
+
+        if (auto file = std::ofstream(rackTracePath))
+        {
+            file << raceengine::rackTorqueToCsv(scripted);
+        }
+
+        engine.log().info("Rack trace {} written: {} frames", rackTracePath, scripted.size());
+
+        return;
+    }
+
     // Unattended runs are the gates, which have no wheel, no driver and no business littering
     // their build directories.
     if (std::getenv("RACEENGINE_UNATTENDED") != nullptr || std::getenv("RACEENGINE_DUMP_FRAME") != nullptr)

@@ -112,3 +112,20 @@ ffb.damping      0.0
 #
 # **Dominic's, chosen from the seat 2026-08-21 after a session at several values. Do not retune it.**
 ffb.damperhz      8.0
+
+# The pedal motors' cue: where it starts and where it saturates, as multiples of the tyre's own peak
+# slip — so a compound change moves the cue with the grip. Stage one answers "how far past its limit
+# is the tyre under this foot"; these set the range the motor renders that over, and smaller numbers
+# are a more sensitive pedal.
+#
+# onset is deliberately past the peak (1.0 *is* the peak): a cue at the peak buzzes on every perfect
+# threshold stop and teaches braking less hard. The two full points differ because slip is bounded
+# at -1 under braking and unbounded under power — a lit-up launch reads twenty peaks, a scrabble off
+# a damp junction two or three.
+#
+# The model's own defaults are onset 1.15, brake_full 2.75, throttle_full 12. The two active lines
+# start at roughly half those ranges — "they could be more sensitive", first bench test 2026-08-21 —
+# and they are feel numbers to move from the seat, exactly as ffb.gain was.
+# pedal.onset          1.15
+pedal.brake_full     2.0
+pedal.throttle_full  6.0
