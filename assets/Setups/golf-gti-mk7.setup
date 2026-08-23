@@ -129,3 +129,32 @@ ffb.damperhz      8.0
 # pedal.onset          1.15
 pedal.brake_full     2.0
 pedal.throttle_full  6.0
+
+# --- the electronics -----------------------------------------------------------------------------
+#
+# ABS, traction control and XDS. Commented out, which means **off** — and off is not what the real
+# car does, so this is a deliberate default rather than an oversight. Every measurement this project
+# has of this car is of the car underneath the electronics: both parity goldens, the 0-100, the
+# skidpad, the coastdown. Switching them on here changes what the driving gate captures, so a sheet
+# with these lines live wants a golden re-bless the same way a spring change does.
+#
+# Driven and accepted 2026-08-23 with all three on -- "drives well, makes a massive difference".
+#
+# What each is worth, measured (docs/abs-and-traction-control-brief.md):
+#
+#   abs   On dry tarmac, almost nothing: this car cannot lock its front wheels at any pedal
+#         position, because brakes.ini's 4200 N.m caps it at 0.997 g. It is worth 22% and three
+#         quarters of the yaw on a split surface, and it keeps the steering under a full stop.
+#   tc    'off', 'full' or 'sport'. Full holds 10% wheel slip and takes 0-100 from 6.550 s to
+#         6.022 s; sport holds 22%, which is 6.153 s and a car that will rotate on the way out of a
+#         corner. On a slippery surface full is the difference between reaching 100 km/h and not.
+#   xds   Brakes the inside front while cornering to stand in for a limited-slip differential. It is
+#         a slight application by design -- a seventh of full braking on one wheel.
+#
+# OSR_ASSISTS overrides all three for one session without touching this file: a comma-separated list
+# of abs, tc, tc-sport and xds, or the single word 'none'. That is what the gates use, so editing
+# this sheet cannot move a golden by accident.
+
+assist.abs  1
+assist.tc   sport
+#assist.xds  1

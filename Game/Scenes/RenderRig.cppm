@@ -38,6 +38,16 @@ export template <typename T> T orThrow(std::expected<T, std::string> result)
     return std::move(result).value();
 }
 
+// One of the shaders the rig registered above, by the name it was registered under.
+//
+// `getShaderByName` answers with an optional because for the engine a lookup miss is not a failure —
+// the caller asked whether a shader exists and the answer is no. For a level it is a failure: the
+// rig either built the shader this scene names or the scene cannot be drawn, and the two names have
+// to agree across two files. The sentence saying which one was missed is worth more than a bad
+// optional access at the point of use, which is a terminate with no name in it.
+export [[nodiscard]] raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine,
+                                                                          const std::string& name);
+
 // The sky, which is the one thing the rig hands back: it follows the camera, so the scene has to put
 // it back on every tick.
 //
@@ -54,6 +64,17 @@ export [[nodiscard]] RenderableModel& buildRenderRig(raceengine::Engine& engine,
 
 namespace osr
 {
+
+raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine, const std::string& name)
+{
+    const auto shader = engine.shader().getShaderByName(name);
+    if (!shader)
+    {
+        raceengine::fail("the render rig registered no shader called '" + name + "'");
+    }
+
+    return shader.value();
+}
 
 RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera, const float skyDistance)
 {
@@ -93,6 +114,7 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
                            engine.resource().loadTextFileAsync("assets/Shaders/PresentToScreenFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PassThroughVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PbrFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/BlinnPhongFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
@@ -121,17 +143,25 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
         raceengine::fail(loaded.error());
     }
 
-    auto [presentationVert, presentationFrag, vert, pbrFragmentShader, depthVertexShader, depthFragmentShader,
-          colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader, prepassVertexShader,
-          prepassFragmentShader, gtaoFragmentShader, aoBlurFragmentShader, bloomDownsampleFragmentShader,
-          bloomUpsampleFragmentShader, moodyFilmGrade, skyboxModel, skyboxVertexShader, skyboxFragmentShader, front,
-          back, left, right, top, bottom] = std::move(loaded).value();
+    auto [presentationVert, presentationFrag, vert, pbrFragmentShader, blinnPhongFragmentShader, depthVertexShader,
+          depthFragmentShader, colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader,
+          prepassVertexShader, prepassFragmentShader, gtaoFragmentShader, aoBlurFragmentShader,
+          bloomDownsampleFragmentShader, bloomUpsampleFragmentShader, moodyFilmGrade, skyboxModel, skyboxVertexShader,
+          skyboxFragmentShader, front, back, left, right, top, bottom] = std::move(loaded).value();
 
     auto presentationShader = orThrow(engine.shader().createShader(
         "present", ShaderDescriptor{.vertexShaderSource = presentationVert, .fragmentShaderSource = presentationFrag}));
 
     orThrow(engine.shader().createShader(
         "pbr", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = pbrFragmentShader}));
+
+    // The same vertex stage as "pbr" and a different reflectance model behind it, for content that
+    // was authored against the classic one — an imported circuit, whose materials state an ambient,
+    // a diffuse, a specular and an exponent and were tuned by somebody looking at exactly those
+    // four numbers. Registered here rather than in the scene that uses it because every shader is
+    // stated here: a scene may differ in what it contains and may not differ in how it is drawn.
+    orThrow(engine.shader().createShader(
+        "blinn-phong", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = blinnPhongFragmentShader}));
 
     // The cascades' depth pass. Position through the light's matrix, nothing written: the target
     // has no colour attachment for a fragment output to reach.
@@ -274,7 +304,7 @@ RenderableModel& buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera
     // distance and the PCF were already hiding.
     orThrow(engine.shadow().enable(scene, sun, camera,
                                    raceengine::CreateShadowCascadesDTO{.depthShader = depthShader,
-                                                                       .resolution = 2048,
+                                                                       .resolution = 4096,
                                                                        .lambda = 0.9f,
                                                                        .distance = 2000.0f,
                                                                        .casterExtent = 1500.0f}));

@@ -1012,6 +1012,7 @@ namespace
         .tractionMode = static_cast<std::uint32_t>(assists.traction.mode),
         .tractionBrakeActive = channels.tractionBrakeActive,
         .tractionEngineActive = channels.tractionEngineActive,
+        .corneringEnabled = assists.cornering.enabled,
         .corneringActive = channels.corneringActive,
         .engineTorqueReduction = channels.engineTorqueReduction};
 

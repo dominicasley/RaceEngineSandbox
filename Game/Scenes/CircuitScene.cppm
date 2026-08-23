@@ -198,9 +198,16 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // tenth of a metre a world unit is. Anything else here and the surface being driven on would be
     // somewhere the surface being drawn is not, which reads as the car floating or sinking rather
     // than as a transform error.
+    //
+    // Drawn through the shader the asset names rather than through "pbr": the circuit's materials
+    // are Assetto Corsa's own, exported as authored, and they describe themselves in the classic
+    // model. `orThrow` rather than `.value()` because a missing shader is a rig that did not build
+    // what this scene needs, and the sentence naming which one is worth more than a bad optional
+    // access — the car beside it still uses "pbr", which is the same statement from the other side:
+    // the model a surface is drawn with belongs to the surface.
     auto& trackEntity = engine.scene().createEntity(
         scene, CreateRenderableModelDTO{.node = engine.sceneManager().createNode(scene),
-                                        .shader = engine.shader().getShaderByName("pbr").value(),
+                                        .shader = shaderNamed(engine, std::string(trackVisualShader)),
                                         .model = trackModel});
 
     const auto placement = toWorldUnits(glm::dvec3(0.0));

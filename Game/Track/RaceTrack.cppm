@@ -135,6 +135,20 @@ export constexpr auto gridSlots =
 export inline constexpr auto trackVisualAsset = std::string_view("assets/Tracks/rt_bathurst_visual.glb");
 export inline constexpr auto trackPhysicsAsset = std::string_view("assets/Tracks/rt_bathurst_physics.glb");
 
+// Which of the render rig's shaders draws the visual export, and it is a property of *that file*
+// rather than of the scene that shows it — which is why it is named here beside the asset and not
+// beside the entity that is built from it.
+//
+// The circuit's materials are Assetto Corsa's own, exported as authored rather than converted:
+// 188 of them, each stating an ambient, a diffuse, a specular and a Blinn-Phong exponent that a
+// modeller set while looking at that formula. Drawn through "pbr" they would need a metalness, and
+// there is no metalness in the source data to read — it can only be inferred, and an inferred metal
+// loses its diffuse colour outright and reads as black tarmac. "blinn-phong" shades from what the
+// file actually states. Re-export the asset with `--ac-materials` (see ~/dev/ac-car-data) and this
+// stays true; re-export it without and every material loses the block this shader reads, which
+// shows up as a circuit uniformly lit by its own ambient term.
+export inline constexpr auto trackVisualShader = std::string_view("blinn-phong");
+
 // The surface table in the order `trackSurfaces` states it, which is the order a triangle's surface
 // index means.
 export [[nodiscard]] std::vector<raceengine::SurfaceMaterial> trackSurfaceMaterials()

@@ -71,6 +71,18 @@ layout(location = 7) out vec3 viewDirectionWorldSpace;
 // One direction per declared light, locations 8..8+MAX_LIGHTS-1; elements at or past
 // lightCount are never read.
 layout(location = 8) out vec3 lightDirectionWorldSpace[MAX_LIGHTS];
+// The vertex in the model's own coordinate system, for materials whose detail layers tile in space
+// rather than in UV (Material.cppm, `DetailLayer`). Located past the light array by arithmetic
+// rather than by a literal, so that changing MAX_LIGHTS cannot silently overlap it.
+//
+// The *unskinned* position, deliberately: a detail layer tiled on a skinned position would swim
+// across the surface as the mesh deforms, where the point of tiling in space is that it does not
+// move. It is also the position before any node transform, so a level that places or scales the
+// model does not thereby change how coarse its detail looks.
+//
+// Fragment stages that do not blend never declare it. That is already the norm here — the whole of
+// ColourFragmentShader declares none of these twelve — and is why an unread output is safe.
+layout(location = 8 + MAX_LIGHTS) out vec3 positionInModelSpace;
 // tangentBinormalNormalMatrix stays local: no fragment stage reads it, and an output no
 // fragment shader consumes is a stage-interface mismatch once SPIR-V is optimized.
 
@@ -90,6 +102,7 @@ void main()
     mat3 modelView3x3Matrix = mat3(frame.viewMatrix);
 
     textureCoordinates = vertexTextureCoordinates;
+    positionInModelSpace = vertexPositionModelSpace;
     positionInWorldSpace = vec3(draw.localToWorld * boneTransform * vec4(vertexPositionModelSpace, 1.0));
     positionInViewSpace = vec3(draw.localToView * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 

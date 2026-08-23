@@ -13,6 +13,7 @@ layout(location = 5) in vec3 bitangentInNormalSpace;
 layout(location = 6) in vec3 normalsInWorldSpace;
 layout(location = 7) in vec3 viewDirectionWorldSpace;
 layout(location = 8) in vec3 lightDirectionWorldSpace[MAX_LIGHTS];
+layout(location = 8 + MAX_LIGHTS) in vec3 positionInModelSpace;
 
 // Set 0: per camera pass. Set 1: per material. Set 2: per draw (dynamic offset).
 struct Light {
@@ -66,6 +67,12 @@ layout(set = SET_MATERIAL, binding = 0) uniform MaterialData {
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
     ivec4 useTextures2;    // x occlusion
     mat4 textureTransform; // KHR_texture_transform, upper 3x3
+    vec4 blinnPhong;       // the classic reflectance model's coefficients; read by BlinnPhongFragmentShader
+    // The blended-material feature: xyzw are the four detail layers' tiling, in repeats per unit of
+    // the model's own space, and blend.x is their strength with blend.y non-zero when the material
+    // states any. Declared here because the block has one std140 layout every stage must agree on.
+    vec4 detailTiling;
+    vec4 blend;
 } material;
 layout(set = SET_MATERIAL, binding = TEXTURE_DIFFUSE) uniform sampler2D diffuseTexture;
 layout(set = SET_MATERIAL, binding = TEXTURE_NORMAL) uniform sampler2D normalTexture;
@@ -73,6 +80,34 @@ layout(set = SET_MATERIAL, binding = TEXTURE_SPECULAR) uniform sampler2D specula
 layout(set = SET_MATERIAL, binding = TEXTURE_EMISSIVE) uniform sampler2D emissiveTexture;
 layout(set = SET_MATERIAL, binding = TEXTURE_OCCLUSION) uniform sampler2D occlusionTexture;
 layout(set = SET_MATERIAL, binding = TEXTURE_ENVIRONMENT) uniform samplerCube environmentMap;
+layout(set = SET_MATERIAL, binding = TEXTURE_BLEND_MASK) uniform sampler2D blendMaskTexture;
+layout(set = SET_MATERIAL, binding = TEXTURE_DETAIL_R) uniform sampler2D detailRTexture;
+layout(set = SET_MATERIAL, binding = TEXTURE_DETAIL_G) uniform sampler2D detailGTexture;
+layout(set = SET_MATERIAL, binding = TEXTURE_DETAIL_B) uniform sampler2D detailBTexture;
+layout(set = SET_MATERIAL, binding = TEXTURE_DETAIL_A) uniform sampler2D detailATexture;
+
+// What the detail layers do to the base colour — the same function as BlinnPhongFragmentShader's,
+// and it must not drift from it: two surfaces of one blended material drawn through different
+// shaders would otherwise stop matching at the seam between them. Full account there and in
+// Material.cppm. A material stating no layers returns 1 and is left exactly as it was, which is
+// what makes this inert for every asset that predates the feature.
+vec3 detailModulation(vec2 uv)
+{
+    if (material.blend.y == 0.0)
+    {
+        return vec3(1.0);
+    }
+
+    vec4 mask = texture(blendMaskTexture, uv);
+    vec2 p = positionInModelSpace.xz;
+
+    vec3 combined = texture(detailRTexture, p * material.detailTiling.x).rgb * mask.r
+                  + texture(detailGTexture, p * material.detailTiling.y).rgb * mask.g
+                  + texture(detailBTexture, p * material.detailTiling.z).rgb * mask.b
+                  + texture(detailATexture, p * material.detailTiling.w).rgb * mask.a;
+
+    return combined * material.blend.x;
+}
 
 // Set 3: one comparison sampler per cascade. A set of its own because the cascades are per frame,
 // not per material. The pipeline uses these statically, so a view with no cascades still binds a
@@ -571,6 +606,7 @@ void main()
         (material.useTextures.z != 0) ? texture(specularTexture, transformedTextureCoordinates) : vec4(1.0);
 
     vec4 albedo = material.baseColour * sampledBaseColour;
+    albedo.rgb *= detailModulation(transformedTextureCoordinates);
 
     // glTF MASK: under the cutoff there is no surface here at all. Discarded before any lighting
     // is spent on it, and *not* blended — a cut-out is opaque geometry with holes, which is what
