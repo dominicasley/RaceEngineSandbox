@@ -65,6 +65,10 @@ export struct CarTune
     // rule costs the sheet's reader nothing: absent keys were already resolved to the defaults on
     // the main thread.
     raceengine::PedalFeedbackSetup pedals{};
+    // The electronics arrive whole for the same reason the pedal cue does: absent keys were already
+    // resolved against a freshly built default on the main thread, so the tick takes an answer rather
+    // than an overlay.
+    raceengine::AssistSetup assists{};
 };
 
 // The tick half of the car the driver is in: the vehicle model, the driveline that turns a key into
@@ -78,8 +82,16 @@ export struct CarTune
 export class SimulatedCar
 {
     // Per rear wheel, N.m. A handbrake is a cable to the rear brakes and is worth about a third of
-    // what the pedal does there, which on this car's 525 a corner is a hundred and seventy-five.
-    static constexpr double handbrakeTorque = 175.0;
+    // what the pedal does there.
+    //
+    // **Derived from the rear brake rather than restated as a number**, which is the correction: it
+    // was 175, being a third of the 525 the rear brake used to make, and the brake torque changed
+    // underneath it on 2026-08-23. A constant that quietly stops being a third of anything is exactly
+    // the kind of stale claim this codebase keeps finding in its own comments.
+    [[nodiscard]] double handbrakeTorque() const
+    {
+        return setup.corners[static_cast<std::size_t>(raceengine::Corner::RearLeft)].brakeTorque / 3.0;
+    }
 
     // One pole at about a hertz on the acceleration the chase camera is driven from. What comes out
     // of a tick is a difference of two velocities across a tick of contact impulses, and a camera
@@ -120,6 +132,29 @@ export class SimulatedCar
     // object's life rather than consumed at construction, because a setup sheet lands a whole fresh
     // setup and would otherwise wipe it — see `stampBeltOverride`.
     double beltBridgingOverride = -1.0;
+
+    // The car's electronics, and their state. **Off unless this run said otherwise** — see
+    // `RunOptions::assists` for why the default is not the factory's. With nothing switched on
+    // `updateAssists` still runs, still samples the tone rings and still reports its channels, and
+    // still answers `commanded == false`, so the vehicle takes the same code path it always did and
+    // both parity goldens are untouched.
+    raceengine::AssistSetup assists;
+    raceengine::AssistState assistState;
+    // This session's `OSR_ASSISTS`, held for the object's life rather than consumed at construction.
+    // A tune rebuilds the electronics from the car and re-applies the sheet, so an override stamped
+    // once would be wiped by the first sheet that landed — which is exactly what `OSR_BELT_MM` did,
+    // and it cost four laps before anybody noticed.
+    AssistSelection assistOverride;
+    // What was last announced, so a reload that changed nothing is silent and a reload that changed
+    // something is not. Announced from here rather than from the sheet's reader because this is the
+    // only place that has resolved both the sheet and the session override.
+    bool assistsReported = false;
+    bool reportedAntilock = false;
+    bool reportedCornering = false;
+    raceengine::TractionMode reportedTraction = raceengine::TractionMode::Off;
+    // What the layer reported on the tick just run. Held because the pedal cue is published after the
+    // vehicle tick and the command that produced it is a local there.
+    raceengine::AssistChannels lastAssistChannels{};
 
     raceengine::VehicleState state;
     raceengine::DrivelineSetup driveline;
@@ -201,7 +236,7 @@ public:
     // radians — a grid slot states one and an AI line does not, which is most of why the slot is the
     // spawn.
     SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
-                 double heading, DriverChoice driver, double beltBridgingLength);
+                 double heading, DriverChoice driver, double beltBridgingLength, AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -293,6 +328,14 @@ private:
     void publishPedalFeedback(const raceengine::VehicleStep& step, const raceengine::VehicleInput& input);
     void publishSnapshot();
     void takeTune();
+
+    // Puts this session's `OSR_ASSISTS` back onto whatever electronics have just landed. Called from
+    // the constructor and from `takeTune`, which are the only two places a setup arrives — the same
+    // rule and the same reason as `stampBeltOverride`.
+    void stampAssistOverride();
+
+    // Says what the car is actually running, the first time and whenever it changes.
+    void reportAssists();
 
     // Puts this session's `OSR_BELT_MM` back onto whatever setup has just landed. Called from the
     // constructor and from `takeTune`, which are the only two places a setup arrives.
@@ -397,7 +440,8 @@ deriveSteeringAssist(const raceengine::VehicleSetup& setup, const double targetR
 } // namespace
 
 SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
-                           const double heading, const DriverChoice driver, const double beltBridgingLength) :
+                           const double heading, const DriverChoice driver, const double beltBridgingLength,
+                           const AssistSelection chosenAssists) :
     engine(engine),
     world(world),
     beltBridgingOverride(beltBridgingLength),
@@ -416,6 +460,23 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
 
     setup = std::move(built).value();
     stampBeltOverride();
+
+    // The electronics are calibrated against the car that was just built rather than against a
+    // second copy of its numbers — brake peaks off the corners, the reference radius off the wheel.
+    assists = raceengine::golfGtiMk7Assists(setup);
+
+    // Held rather than applied once. The setup sheet lands after this and rebuilds the electronics
+    // from the car, so an override consumed here would be wiped by the first sheet that arrived and
+    // the log would go on reporting what it had been asked for. That is `stampBeltOverride`'s four
+    // lost laps exactly, and it happened again here in the same session: the assignment this replaces
+    // never set `assistOverride`, so `OSR_ASSISTS=none` announced itself and changed nothing.
+    assistOverride = chosenAssists;
+    stampAssistOverride();
+
+    // **Deliberately not logged here.** The setup sheet lands after this constructor runs, so a line
+    // printed now would report the pre-sheet state and be wrong for every drive that states an
+    // assist — which is precisely the failure `stampBeltOverride` records having cost four laps. What
+    // the car ended up with is announced by `PlayerCar` when the sheet is applied.
 
     // **Zero is not the tyre this car had before the belt**, and the wording says so, because the
     // obvious reading of an A/B against `OSR_BELT_MM=0` is "with and without E2" and it is not that.
@@ -551,6 +612,46 @@ void SimulatedCar::applyTune(CarTune tune)
     pendingTune = std::move(tune);
 }
 
+void SimulatedCar::stampAssistOverride()
+{
+    if (!assistOverride.stated)
+    {
+        // Nothing on the command line, so the setup sheet's answer stands — which is where a driver
+        // changes these and where they belong.
+        return;
+    }
+
+    assists.antilock.enabled = assistOverride.antilock;
+    assists.traction.mode = assistOverride.tractionSport ? raceengine::TractionMode::Sport
+                            : assistOverride.traction    ? raceengine::TractionMode::Full
+                                                         : raceengine::TractionMode::Off;
+    assists.cornering.enabled = assistOverride.cornering;
+}
+
+void SimulatedCar::reportAssists()
+{
+    const auto antilock = assists.antilock.enabled;
+    const auto cornering = assists.cornering.enabled;
+    const auto traction = assists.traction.mode;
+
+    if (assistsReported && antilock == reportedAntilock && cornering == reportedCornering &&
+        traction == reportedTraction)
+    {
+        return;
+    }
+
+    assistsReported = true;
+    reportedAntilock = antilock;
+    reportedCornering = cornering;
+    reportedTraction = traction;
+
+    engine.log().info("Driver assists: ABS {}, traction control {}, XDS {}{}.", antilock ? "on" : "off",
+                      traction == raceengine::TractionMode::Full    ? "full"
+                      : traction == raceengine::TractionMode::Sport ? "sport"
+                                                                    : "off",
+                      cornering ? "on" : "off", assistOverride.stated ? " (OSR_ASSISTS, overriding the setup)" : "");
+}
+
 void SimulatedCar::takeTune()
 {
     auto held = std::unique_lock<std::mutex>(tuneLock, std::try_to_lock);
@@ -566,6 +667,7 @@ void SimulatedCar::takeTune()
     setup = std::move(pendingTune->setup);
     driveline = std::move(pendingTune->driveline);
     pedals = pendingTune->pedals;
+    assists = pendingTune->assists;
     pendingTune.reset();
 
     // **The whole setup arrives, so anything stamped onto the last one is gone.** A tune is built by
@@ -576,6 +678,8 @@ void SimulatedCar::takeTune()
     // arrived before the first tick, and every drive ran the shipped tyre while the startup log
     // cheerfully reported the setting it had been asked for.
     stampBeltOverride();
+    stampAssistOverride();
+    reportAssists();
 
     // The wheel's own geometry follows the car's. Left behind, an inverted rack would steer the car
     // one way and load the driver's hands the other — a self-centring force pushing *into* the
@@ -678,6 +782,36 @@ void SimulatedCar::tick(const double deltaTime)
         speeds[index] = state.corners[index].wheelSpeed;
     }
 
+    // --- the electronics --------------------------------------------------------------------
+    //
+    // **Upstream of both actuators and downstream of the driver**, which is the whole architecture:
+    // the driver says what they want, this decides how it is delivered, and neither the driveline
+    // nor the vehicle learns that it happened. It runs before the driveline because its throttle
+    // scale is an input to it, and its brake command is handed to the vehicle tick below.
+    //
+    // What crosses into it is the four wheel speeds, the yaw rate, the accelerometer and the
+    // steering angle — all sensors a Mk7 GTI has on its bus. Nothing else can: `raceengine.assists`
+    // is a module that `raceengine.physics` imports, so an import the other way is a dependency
+    // cycle and a build failure rather than a review comment.
+    auto sensors = raceengine::AssistSensors{};
+    sensors.wheelSpeeds = speeds;
+    sensors.yawRate = lastTelemetry.yawRate;
+    sensors.lateralAcceleration = lastTelemetry.acceleration.x;
+    sensors.steeringWheelAngle = lastTelemetry.steeringWheelAngle;
+
+    // The pedal reaches the electronics as the pressure the hydraulics made of it, which the car
+    // states and this layer cannot: the servo's runout and the rear circuit's proportioning valve are
+    // both properties of the plumbing.
+    const auto assistCommand =
+        raceengine::updateAssists(assists, assistState, sensors, {.brake = input.brake, .throttle = input.throttle},
+                                  raceengine::brakeCircuitPressures(setup, input.brake), deltaTime);
+
+    // The engine channel is throttle closing and nothing else: this model's only lever on engine
+    // torque is the pedal, because ignition retard would be a term in the engine model and the
+    // driveline is not this work's to change. It makes the engine channel slower than a real one,
+    // which is the direction that matters least — the brake channel is what catches a transient.
+    input.throttle *= assistCommand.throttleScale;
+
     // The driveline is stepped from the game's loop rather than from inside the vehicle, because
     // which wheels a car drives is a property of the car and not of its suspension. Its torques are
     // recomputed here every tick rather than trusted from anywhere, which is also why they are not
@@ -701,11 +835,12 @@ void SimulatedCar::tick(const double deltaTime)
         for (auto index = std::size_t{2}; index < raceengine::cornerCount; index++)
         {
             const auto arresting = std::abs(speeds[index]) * inertias[index] / deltaTime;
-            wheelTorques[index] -= std::copysign(std::min(handbrakeTorque, arresting), speeds[index]);
+            wheelTorques[index] -= std::copysign(std::min(handbrakeTorque(), arresting), speeds[index]);
         }
     }
 
-    const auto stepped = raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime);
+    const auto stepped =
+        raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime, assistCommand.brakes);
     if (!stepped)
     {
         // Nothing here is a runtime condition: the setup was swept across its own travel at load
@@ -728,6 +863,8 @@ void SimulatedCar::tick(const double deltaTime)
     // copy. A second reader that took the frame from before this line would have written a flat zero
     // into `Engine RPM` for the whole session and it would have looked exactly like an idling car.
     raceengine::fillDrivelineTelemetry(lastTelemetry, drivelineState, lastDrivelineTorques);
+    raceengine::fillAssistTelemetry(lastTelemetry, assistCommand.channels);
+    lastAssistChannels = assistCommand.channels;
 
     // Every tick now, which is the whole point of the clock: a 500 Hz writer sees a fresh value on
     // nearly every output frame instead of one in eight, and `RackFeedback::publishInterval` states
@@ -814,8 +951,20 @@ void SimulatedCar::publishPedalFeedback(const raceengine::VehicleStep& stepped, 
     // minimum load share is a share *of*.
     const auto share = 0.25 * state.chassis.mass * 9.80665;
 
+    // How far the anti-lock unit has taken the wheel pressure away from what the pedal is asking for,
+    // worst wheel. Zero with the system off or passive, and cycling at whatever the modulator is
+    // cycling at when it is not.
+    auto displacement = 0.0;
+    for (auto index = std::size_t{0}; index < raceengine::cornerCount; index++)
+    {
+        displacement = std::max(displacement, lastAssistChannels.driverBrakeTorque[index] > 0.0
+                                                  ? -lastAssistChannels.antilockBrakeTorque[index] /
+                                                        std::max(setup.corners[index].brakeTorque, 1e-6)
+                                                  : 0.0);
+    }
+
     engine.forceFeedback().publishPedals(
-        raceengine::derivePedalFeedback(pedals, wheels, input.brake, input.throttle, share));
+        raceengine::derivePedalFeedback(pedals, wheels, input.brake, input.throttle, share, displacement));
 }
 
 // The tick's telemetry, as the trace carries it.
@@ -831,7 +980,16 @@ void SimulatedCar::publishPedalFeedback(const raceengine::VehicleStep& stepped, 
 namespace
 {
 
-[[nodiscard]] raceengine::VehicleTrace vehicleTraceOf(const raceengine::TelemetryFrame& frame)
+// The trace, from the tick's telemetry and the tick's electronics.
+//
+// **The assist state is passed in rather than looked up**, and it is the same copy rule the rest of
+// this function is under: `AssistChannels` is what the layer reported on this tick and `AssistSetup`
+// is what was fitted when it ran. Reading the setup sheet afterwards answers a different question —
+// a lap driven at 12:25 with the anti-lock system on could not be told from one driven at 12:35 with
+// it off, because by then the file said something else. That is why these columns exist.
+[[nodiscard]] raceengine::VehicleTrace vehicleTraceOf(const raceengine::TelemetryFrame& frame,
+                                                      const raceengine::AssistSetup& assists,
+                                                      const raceengine::AssistChannels& channels)
 {
     auto trace = raceengine::VehicleTrace{
         .centreOfMassX = frame.position.x,
@@ -849,7 +1007,13 @@ namespace
         .brake = frame.brake,
         .clutch = frame.clutch,
         .gear = frame.gear,
-        .engineSpeed = frame.engineSpeed};
+        .engineSpeed = frame.engineSpeed,
+        .antilockEnabled = assists.antilock.enabled,
+        .tractionMode = static_cast<std::uint32_t>(assists.traction.mode),
+        .tractionBrakeActive = channels.tractionBrakeActive,
+        .tractionEngineActive = channels.tractionEngineActive,
+        .corneringActive = channels.corneringActive,
+        .engineTorqueReduction = channels.engineTorqueReduction};
 
     // By index, both sides. `raceengine::tracedCornerCount` and `raceengine::cornerCount` are the
     // same four corners in the same order — the input partition cannot name the physics module's
@@ -870,7 +1034,10 @@ namespace
                                                      .suspensionTravel = wheel.suspensionTravel,
                                                      .damperVelocity = wheel.damperVelocity,
                                                      .contactingSamples = wheel.contactingSamples,
-                                                     .patchDepthSpread = wheel.patchDepthSpread};
+                                                     .patchDepthSpread = wheel.patchDepthSpread,
+                                                     .antilockActive = channels.antilockActive[index],
+                                                     .antilockCycles = channels.antilockCycles[index],
+                                                     .brakePressure = channels.pressure[index]};
     }
 
     return trace;
@@ -1013,7 +1180,7 @@ void SimulatedCar::publishRackTorque(const raceengine::VehicleStep& stepped, con
         .publishInterval = deltaTime,
         .inputTimestampNanos = sampleNanos,
         // The tick's own frame, projected. Nothing downstream steers by it.
-        .vehicle = vehicleTraceOf(lastTelemetry)});
+        .vehicle = vehicleTraceOf(lastTelemetry, assists, lastAssistChannels)});
 }
 
 } // namespace osr

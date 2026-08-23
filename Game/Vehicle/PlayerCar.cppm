@@ -272,6 +272,11 @@ void PlayerCar::reloadSetupIfChanged()
     raceengine::applyVehicleTune(tune.value(), next.setup);
     raceengine::applyVehicleTune(tune.value(), next.driveline);
 
+    // The electronics, resolved against the car that was just rebuilt so their brake calibration is
+    // this sheet's brake torques and not the last one's. Absent keys leave them off.
+    next.assists = raceengine::golfGtiMk7Assists(next.setup);
+    raceengine::applyVehicleTune(tune.value(), next.assists);
+
     // The pedal cue's thresholds, resolved against the freshly built defaults for the same reason
     // the setup is rebuilt: a deleted line means the model's own number, not the last one stated.
     // Applied here rather than by a `SetupFile` overload because the consumer's type lives in the
@@ -285,6 +290,12 @@ void PlayerCar::reloadSetupIfChanged()
     const auto preload = next.driveline.differential.preload;
     const auto brakeFull = next.pedals.brakeFullPeaks;
     const auto throttleFull = next.pedals.throttleFullPeaks;
+    // **The electronics are deliberately not reported from here**, and this is the second time this
+    // file has had to learn it. What the sheet states is not what the car runs whenever
+    // `OSR_ASSISTS` is in play, and a line printed here says the sheet's answer with total
+    // confidence — which is what it did, announcing "ABS on, traction control full" on a gate run
+    // that had explicitly asked for none. `SimulatedCar` reports them, because it is the only thing
+    // that has resolved both.
 
     car.applyTune(std::move(next));
 
@@ -308,9 +319,8 @@ void PlayerCar::reloadSetupIfChanged()
         // indistinguishable from a line that only says a file was applied.
         engine.log().info("Setup {} applied: rack travel {:+.4f} m per unit, front spring {:.0f} N/m, diff preload "
                           "{:.0f} N.m, ffb gain {:.2f} ceiling {:.1f} N.m, pedal full at {:.2f}/{:.1f} peaks",
-                          setupPath.string(), rackTravel, frontSpring, preload,
-                          engine.forceFeedback().mapping().gain, engine.forceFeedback().mapping().ceilingTorque,
-                          brakeFull, throttleFull);
+                          setupPath.string(), rackTravel, frontSpring, preload, engine.forceFeedback().mapping().gain,
+                          engine.forceFeedback().mapping().ceilingTorque, brakeFull, throttleFull);
     }
 }
 

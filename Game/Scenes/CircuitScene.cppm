@@ -223,7 +223,7 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = gridSlots.front();
     simulatedCar = &simulation->add(slot.position, glm::radians(slot.yaw), options.driver,
-                                    0.001 * options.beltBridgingMillimetres);
+                                    0.001 * options.beltBridgingMillimetres, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.

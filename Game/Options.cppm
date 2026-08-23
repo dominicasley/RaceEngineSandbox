@@ -41,6 +41,24 @@ export enum class DriverChoice {
     Launch
 };
 
+// Which of the car's electronics this run has switched on.
+// A **session override** of what the setup sheet says, and not the place the assists live.
+//
+// Their home is `assets/Setups/golf-gti-mk7.setup`, where a driver can change them between two laps
+// — see `AssistTune`. This exists for the same reason `OSR_BELT_MM` does and behaves the same way:
+// something that has to be able to say "these, whatever is on disk" without editing the disk. The
+// gates are the case that makes it load-bearing, since a sheet edit would otherwise move a golden.
+//
+// `stated` is what separates "unset, so the sheet decides" from "explicitly none".
+export struct AssistSelection
+{
+    bool stated = false;
+    bool antilock = false;
+    bool traction = false;
+    bool tractionSport = false;
+    bool cornering = false;
+};
+
 export struct RunOptions
 {
     SceneChoice scene = SceneChoice::Circuit;
@@ -74,6 +92,17 @@ export struct RunOptions
     // for is being a number and being sane, because a typo that silently read as zero would look
     // exactly like "the belt does nothing".
     double beltBridgingMillimetres = -1.0;
+
+    // A session override of the setup sheet's assists. `OSR_ASSISTS`, a comma-separated list of
+    // `abs`, `tc`, `tc-sport` and `xds`, or the single word `none`; **unset means the sheet decides**,
+    // which is where they belong.
+    //
+    // Beside the cross-variable validation rather than inside it, for `OSR_BELT_MM`'s reason: those
+    // three refuse combinations that cannot exist and this has no partner to contradict. It is still
+    // checked for naming something, because a typo that read as "off" would look exactly like an
+    // assist that does nothing — and `none` exists so that forcing them off is a word rather than
+    // the absence of one.
+    AssistSelection assists{};
 };
 
 export [[nodiscard]] RunOptions runOptions();
@@ -194,6 +223,78 @@ namespace
     return value;
 }
 
+// A comma-separated list, and an unknown word is refused rather than ignored.
+[[nodiscard]] AssistSelection assists()
+{
+    auto chosen = AssistSelection{};
+
+    const auto value = setting("OSR_ASSISTS");
+    if (value.empty())
+    {
+        return chosen;
+    }
+
+    auto from = std::string::size_type{0};
+    while (from <= value.size())
+    {
+        const auto to = value.find(',', from);
+        const auto word = value.substr(from, to == std::string::npos ? std::string::npos : to - from);
+
+        if (word == "none")
+        {
+            // Says nothing beyond "stated", which is the whole point of it: an empty value means the
+            // sheet decides, and a gate needs a way to say off that a sheet cannot argue with.
+            chosen.stated = true;
+        }
+        else if (word == "abs")
+        {
+            chosen.antilock = true;
+        }
+        else if (word == "tc")
+        {
+            chosen.traction = true;
+        }
+        else if (word == "tc-sport")
+        {
+            chosen.tractionSport = true;
+        }
+        else if (word == "xds")
+        {
+            chosen.cornering = true;
+        }
+        else if (!word.empty())
+        {
+            throw std::runtime_error("OSR_ASSISTS names something this car does not have: '" + word +
+                                     "'. It takes a comma-separated list of 'abs', 'tc', 'tc-sport' and 'xds', or "
+                                     "the single word 'none'. Leave it unset to use the setup sheet's.");
+        }
+
+        chosen.stated = chosen.stated || !word.empty();
+
+        if (to == std::string::npos)
+        {
+            break;
+        }
+
+        from = to + 1;
+    }
+
+    if (chosen.stated && chosen.antilock == false && chosen.traction == false && chosen.tractionSport == false &&
+        chosen.cornering == false && value != "none")
+    {
+        throw std::runtime_error("OSR_ASSISTS was set to '" + value +
+                                 "' and names nothing. Leave it unset to use the setup sheet's, or say 'none'.");
+    }
+
+    if (chosen.traction && chosen.tractionSport)
+    {
+        throw std::runtime_error("OSR_ASSISTS asks for both 'tc' and 'tc-sport', which are two settings of one "
+                                 "system rather than two systems. Name one.");
+    }
+
+    return chosen;
+}
+
 [[nodiscard]] double beltBridgingMillimetres()
 {
     const auto value = setting("OSR_BELT_MM");
@@ -244,12 +345,14 @@ namespace
 RunOptions runOptions()
 {
     const auto chosen = scene();
+    const auto chosenAssists = assists();
 
     return RunOptions{.scene = chosen,
                       .camera = camera(chosen),
                       .driver = driver(chosen),
                       .rackTrace = rackTrace(chosen),
-                      .beltBridgingMillimetres = beltBridgingMillimetres()};
+                      .beltBridgingMillimetres = beltBridgingMillimetres(),
+                      .assists = chosenAssists};
 }
 
 } // namespace osr
