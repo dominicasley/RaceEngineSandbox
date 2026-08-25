@@ -12,6 +12,7 @@ import :CarEntity;
 import :DinosaurEntity;
 import :FPSCameraController;
 import :GroundPlane;
+import :Options;
 import :RenderRig;
 
 import raceengine;
@@ -47,12 +48,20 @@ private:
     FPSCameraController freeCamera;
 
     RenderableModel* sky;
+    // The layered frame's other two cameras, kept only to hold their pose to the one above: this
+    // fixture never splits its meters, so the linked default the rig builds is the whole policy.
+    Camera* carCamera = nullptr;
+    Camera* frameCamera = nullptr;
     // Built in the body rather than the initialiser list because it needs the "pbr" shader, which
     // the render rig creates down there out of a file this scene awaits.
     std::optional<CarEntity> car;
 
 public:
-    explicit ApronScene(raceengine::Engine& engine);
+    // Takes the run's configuration for one thing only: how much air the fixture stands in. The
+    // rest of `RunOptions` is the circuit's — this scene has no camera to choose, no driver and
+    // no assists — but the fog is the look, the look is shared by both gates, and a fixture that
+    // could not be A/B'd against `OSR_FOG=off` would be a fixture that stopped watching it.
+    explicit ApronScene(raceengine::Engine& engine, const RunOptions& options);
     void update(float delta);
 };
 
@@ -89,7 +98,7 @@ constexpr auto bollardStand = glm::vec3(168.0f, 0.0f, 205.0f);
 
 } // namespace
 
-ApronScene::ApronScene(raceengine::Engine& engine) :
+ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
@@ -104,11 +113,31 @@ ApronScene::ApronScene(raceengine::Engine& engine) :
     //
     // Film speed is left where it is: unlike the circuit, this frame does not drive the meter
     // anywhere near its shutter clamp.
-    engine.camera().setExposure(camera, 4.75f);
+    // Re-measured under the six-degree morning sun, where this fixture settles at 7.44; it was 4.75
+    // under the 45-degree one. Seeding at the answer is what keeps the captured frame off the
+    // adaptation curve — measured previously, seeding a stop out left the frame a whole value of 255
+    // short at frame 120 across 4329 of its 32400 blocks.
+    engine.camera().setExposure(camera, 7.44f);
+
+    // Faster film, for the reason CircuitScene gives and now for the same measured cause: the low
+    // morning sun took this fixture 2.4 stops darker than the midday one it was composed under, and
+    // on ISO 6400 the meter asked for longer than `maxShutterTime` and sat pinned at 1/4 s — under
+    // its own reading, with the ground plane crushed to black as a result. Film speed and aperture
+    // cancel out of the exposure multiplier, so this changes nothing about the picture except that
+    // the meter can reach the answer it wants.
+    engine.camera().setFilmSpeed(camera, 25600);
 
     engine.camera().setPosition(camera, cameraStand.x, cameraStand.y, cameraStand.z);
 
-    sky = &buildRenderRig(engine, scene, camera);
+    // The apron's ground is y = 0, so the fog layer is quoted where the fixture actually stands.
+    const auto rig = buildRenderRig(engine, scene, camera, 2500.0f,
+                                    RigAir{.baseHeight = 0.0f,
+                                           .densityScale = static_cast<float>(options.fogDensityScale),
+                                           .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
+                                           .rain = static_cast<float>(options.rainIntensity)});
+    sky = rig.sky;
+    carCamera = rig.carCamera;
+    frameCamera = rig.frameCamera;
 
     GroundPlane(engine, scene);
     DinosaurEntity(engine, scene);
@@ -178,6 +207,9 @@ ApronScene::ApronScene(raceengine::Engine& engine) :
 void ApronScene::update(float delta)
 {
     freeCamera.update(camera, delta);
+
+    // After the controller, so all three views record this tick's eye.
+    syncLayeredCameras(camera, *carCamera, *frameCamera);
 
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }

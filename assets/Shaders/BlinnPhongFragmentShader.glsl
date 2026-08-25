@@ -89,6 +89,19 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
     ivec4 shadowParams;            // x = cascades in use (0 = shade lit), y = the light they follow
     ivec4 probeParams;             // x = probes in use (0 = no image-based lighting at all)
     Probe probes[MAX_IBL_PROBES];
+    // The air. Appended to the block for the reason the material block's fifth vec4 was: a uniform
+    // block may be a prefix of the buffer backing it, so a stage that declares only as far as what
+    // it reads keeps matching, and a field inserted above would silently move every probe under
+    // every one of them. Zero density is a scene that states no fog. See Fog, and applyFog below.
+    vec4 fogDensity;               // x extinction at the reference height, y 1/scale height,
+                                   // z that reference height, w how far the medium is integrated
+    vec4 fogScatter;               // xyz single-scatter albedo, w Henyey-Greenstein's asymmetry
+    vec4 fogAmbient;               // xyz a tint on the ambient half, w a gain on the sun's
+    // The weather, appended under the same prefix rule as the air above it. Only y — the rain
+    // intensity, Scene::rain — is read here: x is the clock and zw the airstream, which are the
+    // windscreen's business and not a road's. Zero rain is the dry scene, and everything wet in
+    // this shader is one branch on it.
+    vec4 timeRain;
 } frame;
 
 // Declared because the block has one std140 layout both stages must agree on. This model reflects
@@ -284,6 +297,285 @@ float shadowFactor(vec3 worldPosition, vec3 worldNormal, vec3 lightDirection, fl
     return mix(shadow, 1.0, clamp((viewDepth - fadeStart) / max(lastSplit - fadeStart, 0.0001), 0.0, 1.0));
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Volumetric fog, and the god rays that fall out of the same integral.
+//
+// Single scattering through a medium whose density falls off exponentially with height. It is in
+// two halves and the split is what makes it affordable:
+//
+//  - **Extinction, and the light everything-but-the-sun scatters into the ray, are closed form.**
+//    The optical depth of an exponential profile along a ray has an analytic value (Inigo Quilez,
+//    https://iquilezles.org/articles/fog/), and because the density is the derivative of that
+//    optical depth, the in-scattering integral of anything the shadow map does not touch is exactly
+//    `1 - transmittance`. Neither is marched, so the haze is right out to the sky box for the cost
+//    of an exponential.
+//  - **The sun's half is marched**, because the shadow map is inside its integral. That is the god
+//    rays: the medium is lit where the cascades say the sun reaches it.
+//
+// The quadrature is the load-bearing detail. Each step is weighted by the *difference* in
+// transmittance across it — which is the analytic value of the in-scattering integral over that
+// step — so with nothing shadowing anything the sum telescopes to exactly the `1 - transmittance`
+// above. The marched half therefore cannot exceed the analytic total at any step count, and
+// FOG_MARCH_STEPS is a quality knob rather than a correctness one.
+//
+// **Nothing here states a colour.** The shafts are the colour of the light casting them and the haze
+// is the mean of what the scene's global probe photographed, so dusk fogs as dusk and midnight fogs
+// as almost nothing, with no curve anywhere that somebody had to tune for either. A light probe
+// capture uploads no fog at all — VulkanRenderer's probe path says why — which is what stops the
+// second of those feeding itself.
+//
+// **This block is the same in PbrFragmentShader, BlinnPhongFragmentShader and SkyboxFragmentShader
+// and must not drift between them**: this engine compiles each shader from one source string and
+// has no include resolver to share code through, and two surfaces of one scene fogging by different
+// arithmetic would part company along the seam between them. `Graphics/Api/VolumetricFog.cppm` is
+// the same arithmetic once more in C++, where it is unit-tested without a device;
+// docs/volumetric-fog-brief.md is the account.
+// ---------------------------------------------------------------------------------------------
+
+// How far the density profile's exponent may run either side of the reference height before it is
+// held. Past this the medium is either so thin that nothing survives rounding or so thick that
+// nothing survives the medium, and exp() of it stops being representable.
+const float fogMaximumExponent = 80.0;
+
+// The optical depth of the medium along a ray, in closed form. `directionY` is the y component of a
+// normalised direction and `rayLength` how far along it to integrate, in world units.
+float fogOpticalDepth(float originHeight, float directionY, float rayLength)
+{
+    float falloff = frame.fogDensity.y;
+
+    // The profile's exponent at each end of the ray, in scale heights above the reference, and the
+    // climb between them. Stated in the two *ends* rather than in one end and a climb, and that is a
+    // correction rather than a preference: clamping the climb alone reads as no fog at all on
+    // exactly the ray it was meant to protect. A camera high above a shallow layer looking steeply
+    // down has a tiny density at the eye and an enormous one at the far end, and the product of an
+    // underflow and a clamped overflow is zero — a ray that should be completely opaque coming back
+    // completely clear. Clamping each end instead bounds the *medium*, which is a statement about
+    // the fog rather than about the ray's geometry.
+    float nearExponent = (originHeight - frame.fogDensity.z) * falloff;
+    float farExponent = nearExponent + rayLength * directionY * falloff;
+    float climb = farExponent - nearExponent;
+
+    float nearDensity = exp(-clamp(nearExponent, -fogMaximumExponent, fogMaximumExponent));
+    float farDensity = exp(-clamp(farExponent, -fogMaximumExponent, fogMaximumExponent));
+
+    // The integral is `density * rayLength * (1 - exp(-climb)) / climb`, which is the difference of
+    // the two densities over the climb. At climb = 0 that is 0/0 with a limit of 1, and near zero it
+    // is the difference of two nearly equal numbers over a small one — most of a float's mantissa.
+    // A level ray is exactly zero and a level ray is what a driver spends the lap looking along, so
+    // the series is the common case rather than an edge one.
+    if (abs(climb) > 1.0e-2)
+    {
+        return max(frame.fogDensity.x * rayLength * (nearDensity - farDensity) / climb, 0.0);
+    }
+
+    return max(frame.fogDensity.x * rayLength * nearDensity
+                   * (1.0 - climb * 0.5 + climb * climb * (1.0 / 6.0)),
+               0.0);
+}
+
+// Henyey-Greenstein, normalised so that isotropic scattering is exactly 1 rather than 1/4pi. The
+// factor is carried where a directional source's irradiance becomes a radiance instead, which is the
+// one place it belongs. `cosTheta` is dot(ray, towards the light), so a camera looking straight at
+// the sun reads 1 and gets the forward lobe — and that asymmetry *is* the effect: at zero there is
+// no shaft, only a wash.
+float fogPhase(float cosTheta, float anisotropy)
+{
+    float g = clamp(anisotropy, -0.95, 0.95);
+    float gg = g * g;
+    float denominator = 1.0 + gg - 2.0 * g * clamp(cosTheta, -1.0, 1.0);
+
+    return (1.0 - gg) / max(pow(max(denominator, 0.0), 1.5), 1.0e-4);
+}
+
+// The colour of the light the medium scatters in from everywhere that is not the sun: the global
+// probe's band-0 spherical-harmonic coefficient, which is the mean of the sphere it photographed and
+// so is the isotropic in-scattering term by definition rather than by approximation. A scene with no
+// global probe has no answer to this and fogs from the sun alone, which is dark and is honest.
+vec3 fogAmbientRadiance()
+{
+    for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
+    {
+        if (frame.probes[index].boxMax.w == 0.0)
+        {
+            continue;
+        }
+
+        return max(frame.probes[index].irradiance[0].rgb * 0.282095, vec3(0.0));
+    }
+
+    return vec3(0.0);
+}
+
+// How much of the shadow-casting light reaches a point in the *air*.
+//
+// Not `shadowFactor`, and the differences are the point: that one offsets its sample along a surface
+// normal and biases by the surface's slope, and a point in a medium has neither. What it keeps is
+// the cascade choice and the rule at the far end — past the last cascade every sample is lit, and
+// the last SHADOW_FADE_PERCENT of the distance fades to lit rather than stopping dead, or the shafts
+// would end on a sphere ruled through the air at a fixed distance from the camera.
+float fogVisibility(vec3 worldPosition, float viewDepth)
+{
+    if (frame.shadowParams.x <= 0)
+    {
+        return 1.0;
+    }
+
+    float lastSplit = frame.shadowSplits[frame.shadowParams.x - 1];
+    if (viewDepth >= lastSplit)
+    {
+        return 1.0;
+    }
+
+    int cascade = frame.shadowParams.x - 1;
+    for (int index = 0; index < SHADOW_CASCADES; index++)
+    {
+        if (index < frame.shadowParams.x && viewDepth < frame.shadowSplits[index])
+        {
+            cascade = index;
+            break;
+        }
+    }
+
+    vec4 lightSpace = frame.shadowMatrices[cascade] * vec4(worldPosition, 1.0);
+    vec3 coordinate = lightSpace.xyz / lightSpace.w;
+
+    // Past the cascade's far plane nothing was stored to compare against, exactly as on a surface.
+    if (coordinate.z >= 1.0)
+    {
+        return 1.0;
+    }
+
+    // The constant part of the surface path's bias budget and none of its slope part, in the same
+    // texel units: there is no surface here to acne against, but the last steps of a march stand
+    // close enough to one to fight with it.
+    coordinate.z -= frame.shadowTexelWorldSize[cascade] * float(SHADOW_CONSTANT_BIAS_TEXELS)
+        * frame.shadowDepthScale[cascade];
+
+    float visibility = 1.0;
+
+    // One tap, and no percentage-closer filter: the march already averages FOG_MARCH_STEPS lookups
+    // along the ray and the dither is what turns the boundary between them into a gradient. An array
+    // of samplers may only be indexed by a dynamically uniform expression, which is what the loop is
+    // for — `shadowInCascade` does the same dance for the same reason.
+    for (int index = 0; index < SHADOW_CASCADES; index++)
+    {
+        if (index != cascade)
+        {
+            continue;
+        }
+
+        visibility = texture(shadowMaps[index], coordinate);
+    }
+
+    float fadeStart = lastSplit * (1.0 - float(SHADOW_FADE_PERCENT) / 100.0);
+
+    return mix(visibility, 1.0, clamp((viewDepth - fadeStart) / max(lastSplit - fadeStart, 0.0001), 0.0, 1.0));
+}
+
+// Interleaved gradient noise — a function of the pixel and of nothing else, so two captures of one
+// frame stay identical and the parity gate still means something. The same generator the occlusion
+// gather rotates its slices by. Here it moves each step's sample inside the step it stands for:
+// without it sixteen steps land on sixteen surfaces spread across the screen, and a surface in a
+// medium reads as a band.
+float fogDither(vec2 pixel)
+{
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// The medium between the eye and a point `rayLength` away along `rayDirection`: rgb the radiance it
+// scatters into the ray, a the fraction of whatever is behind it that survives.
+vec4 fogAlongRay(vec3 rayDirection, float rayLength)
+{
+    float originHeight = frame.cameraPosition.y;
+    float reach = min(rayLength, frame.fogDensity.w);
+    float transmittance = exp(-fogOpticalDepth(originHeight, rayDirection.y, reach));
+
+    int shadowLight = clamp(frame.shadowParams.y, 0, MAX_LIGHTS - 1);
+    vec3 towardsLight = normalize(frame.lights[shadowLight].position.xyz);
+
+    // The march reaches only as far as the cascades do. Past the last split the shadow code shades
+    // every fragment lit — there is no map to ask — so the rest of the ray is unshadowed by that
+    // same statement rather than by a second one, and it is the closed form's to carry.
+    float shadowReach = frame.shadowParams.x > 0 ? frame.shadowSplits[frame.shadowParams.x - 1] : 0.0;
+    float marchReach = min(reach, shadowReach);
+
+    // How far the ray leans off the view axis, which is what turns a distance along it into the depth
+    // the cascade splits are stated in. Once, because a straight ray's is constant.
+    float viewAxis = -(mat3(frame.viewMatrix) * rayDirection).z;
+
+    float sunIntegral = 0.0;
+    float previous = 1.0;
+
+    if (marchReach > 0.0)
+    {
+        float jitter = fogDither(gl_FragCoord.xy);
+
+        for (int index = 1; index <= FOG_MARCH_STEPS; index++)
+        {
+            float here = marchReach * float(index) / float(FOG_MARCH_STEPS);
+            float survives = exp(-fogOpticalDepth(originHeight, rayDirection.y, here));
+
+            float sampleAt = marchReach * (float(index) - jitter) / float(FOG_MARCH_STEPS);
+            float visibility = fogVisibility(frame.cameraPosition.xyz + rayDirection * sampleAt,
+                                             sampleAt * viewAxis);
+
+            // Weighted by the transmittance the step spans rather than by the length of it: that is
+            // the analytic in-scattering over the step, and it is what makes this sum telescope.
+            sunIntegral += visibility * (previous - survives);
+            previous = survives;
+        }
+    }
+
+    // Whatever is left of the ray beyond the cascades, at visibility one.
+    sunIntegral += previous - transmittance;
+
+    // A directional source of irradiance E scattered isotropically gives a radiance of E/4pi in every
+    // direction, and the phase function above is stated relative to that isotropic case — so this is
+    // where the 4pi the published phase function carries actually lives. Both halves below are
+    // radiances and can be added.
+    const float fogInverseSphere = 0.0795774715;
+
+    vec3 sunRadiance = frame.lights[shadowLight].diffuse.rgb * fogInverseSphere * frame.fogAmbient.w
+        * fogPhase(dot(rayDirection, towardsLight), frame.fogScatter.w);
+    vec3 ambientRadiance = fogAmbientRadiance() * frame.fogAmbient.xyz;
+
+    // The single-scatter albedo is the fraction of extinction that scatters rather than absorbs, and
+    // it is the one coloured coefficient here: this is Quilez's separate extinction and in-scattering
+    // said once, which keeps the transmittance and every marched weight a single number.
+    vec3 inScattered = frame.fogScatter.rgb
+        * (ambientRadiance * (1.0 - transmittance) + sunRadiance * sunIntegral);
+
+    return vec4(inScattered, transmittance);
+}
+
+// The medium applied to a shaded surface.
+//
+// `coverage` is the surface's own alpha. The scene pass blends premultiplied, so what the fog adds
+// has to be scaled by coverage exactly as the diffuse term is: a windscreen at alpha 0.3 that added
+// a whole helping of haze would lay it over a road that has already been fogged over a longer ray
+// behind it. At alpha 1 this is the plain statement, so every opaque surface reads the obvious thing.
+vec3 applyFog(vec3 colour, vec3 worldPosition, float coverage)
+{
+    // Zero density is the scene that states no fog, and it is the only branch: the block is
+    // value-initialised, so this is also every frame drawn before the feature existed.
+    if (frame.fogDensity.x <= 0.0)
+    {
+        return colour;
+    }
+
+    vec3 toFragment = worldPosition - frame.cameraPosition.xyz;
+    float rayLength = length(toFragment);
+    if (rayLength <= 0.0)
+    {
+        return colour;
+    }
+
+    vec4 fog = fogAlongRay(toFragment / rayLength, rayLength);
+
+    return colour * fog.a + fog.rgb * coverage;
+}
+
 // The basis, evaluated. The same nine functions in the same order as the engine's C++ projection
 // (Graphics/Api/SphericalHarmonics.cppm) and as PbrFragmentShader's copy.
 vec3 evaluateIrradiance(vec4 coefficients[SH_COEFFICIENTS], vec3 direction)
@@ -391,6 +683,66 @@ vec3 indirectDiffuse(vec3 worldNormal)
     return evaluateIrradiance(blended, worldNormal);
 }
 
+// -- Wet surfaces ---------------------------------------------------------------------------------
+//
+// Stage one of rain in the world (docs/world-rain-brief.md): a wet road is darker, glossier and
+// mirror-like at grazing angles, and that single change does more for "it is raining" than any
+// falling streak, because it is what the driver is looking at. The model is a thin film of water
+// over the authored material — the body darkens, a water lobe with its own Fresnel joins the
+// highlight, and the sky arrives along the reflected ray — with standing water only where the
+// surface is nearly level, masked by world-position noise so the puddles are places and not a
+// coat. Everything below is one branch on the scene's own rain, so a dry frame is bit-for-bit the
+// shader that had no rain in it.
+
+// An integer hash, the house rule for anything procedural: a function of the cell alone, never of
+// a wall clock and never fract(sin(...)). Same shape as the windscreen's rainHash.
+float wetHash(ivec2 cell)
+{
+    uint hashed = uint(cell.x) * 374761393u + uint(cell.y) * 668265263u;
+    hashed = (hashed ^ (hashed >> 13u)) * 1274126177u;
+    hashed = hashed ^ (hashed >> 16u);
+
+    return float(hashed & 0x00FFFFFFu) / 16777215.0;
+}
+
+// Smoothed value noise over world-space cells. World space rather than UV because where water
+// stands is a fact about the ground, and this track's UV layout restarts every few metres.
+float wetNoise(vec2 position)
+{
+    vec2 cell = floor(position);
+    vec2 f = position - cell;
+    f = f * f * (3.0 - 2.0 * f);
+
+    ivec2 corner = ivec2(cell);
+    float a = wetHash(corner);
+    float b = wetHash(corner + ivec2(1, 0));
+    float c = wetHash(corner + ivec2(0, 1));
+    float d = wetHash(corner + ivec2(1, 1));
+
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// How much standing water this fragment carries, 0 to 1. Two gates multiplied: flatness — water
+// runs off a cambered road, and Bathurst is cambered nearly everywhere, so puddles live on the few
+// near-level patches — and a two-octave noise in world metres, thresholded lower as it rains
+// harder, so light rain damps the road and heavy rain stands in it. A world unit is a tenth of a
+// metre, so the 0.03 puts the noise's features at three-odd metres.
+float puddleMask(vec3 worldPosition, vec3 worldUp, float wetness)
+{
+    float upness = clamp(worldUp.y, 0.0, 1.0);
+    float level = smoothstep(0.995, 0.9995, upness);
+    if (level <= 0.0)
+    {
+        return 0.0;
+    }
+
+    vec2 p = worldPosition.xz * 0.03;
+    float shape = wetNoise(p) * 0.65 + wetNoise(p * 3.1) * 0.35;
+    float threshold = mix(0.78, 0.55, wetness);
+
+    return level * smoothstep(threshold, threshold + 0.10, shape);
+}
+
 void main()
 {
     vec2 transformedTextureCoordinates = (mat3(material.textureTransform) * vec3(textureCoordinates, 1.0)).xy;
@@ -408,6 +760,24 @@ void main()
     {
         discard;
     }
+
+    // **glTF MASK is binary, and this is where that has to be enforced.** The spec is explicit: a
+    // masked material renders "either fully opaque or fully transparent" according to the cutoff.
+    // The discard above delivers the transparent half; without the line below the opaque half was
+    // never delivered, because the coverage that survived the test was then written out *as* the
+    // fragment's alpha — and every scene draw in this engine blends premultiplied, so a texel at 0.6
+    // against a 0.4 cutoff passed the test and then composited at sixty percent over whatever had
+    // already been drawn. On a tree card that reads as a soft edge and nobody looks twice; on the
+    // ground cover, the sand edges and the kerb decals it reads as **seeing other parts of the track
+    // through the ground**, which is what it was reported as.
+    //
+    // A cut-out is opaque geometry with holes. Above the cutoff there is surface here, and surface
+    // here is opaque.
+    if (material.roughMetal.z > 0.0)
+    {
+        albedo.a = 1.0;
+    }
+
 
     float ambientLevel = material.blinnPhong.x;
     float diffuseLevel = material.blinnPhong.y;
@@ -427,12 +797,41 @@ void main()
         specularExponent = max(1.0, specularExponent * maps.g);
     }
 
+    // The rain's wetness, one branch on the scene's own statement so a dry frame is bit-for-bit
+    // the shader that had no rain in it. The albedo darkens by nearly half at full wetness — a wet
+    // porous surface loses roughly that much diffuse reflectance to internal reflection under the
+    // film — and a puddle darkens further still, because what it shows instead is the sky, added as
+    // reflection below rather than as body.
+    //
+    // Opaque surfaces only, and the tyre marks are why. The scene pass blends premultiplied and
+    // coverage scales the body, not the highlight — so a blended decal at thirty percent coverage
+    // was adding the water lobe and the sky reflection at *full* strength and glowing. A blended
+    // surface is a film over ground that is already wet underneath; the wet tarmac shows through
+    // it, and that is the whole of what it should say about the rain. Mask cutouts are opaque and
+    // stay wet.
+    float wetness = 0.0;
+    float puddle = 0.0;
+    if (frame.timeRain.y > 0.0 && material.useTextures2.y != 0)
+    {
+        wetness = clamp(frame.timeRain.y, 0.0, 1.0);
+        puddle = puddleMask(positionInWorldSpace, normalize(normalsInWorldSpace), wetness);
+        albedo.rgb *= (1.0 - 0.45 * wetness) * (1.0 - 0.35 * puddle);
+    }
+
     // Tangent space, for the direct term: the vertex stage hands the light and view directions over
     // already rotated into it, so the normal map is used raw and no basis is rebuilt here.
     vec3 V = normalize(viewDirectionWorldSpace);
     vec3 N = (material.useTextures.y != 0)
         ? normalize(texture(normalTexture, transformedTextureCoordinates).xyz * 2.0 - 1.0)
         : vec3(0.0, 0.0, 1.0);
+
+    // Standing water is its own surface: level, so the texture's normal gives way to the pane of
+    // the water as the puddle deepens. The geometric camber stays — the basis below still tilts
+    // with the road — which is why the flatness gate above only admits near-level ground.
+    if (puddle > 0.0)
+    {
+        N = normalize(mix(N, vec3(0.0, 0.0, 1.0), puddle));
+    }
 
     // The other half of a double-sided material. A fragment seen from behind is the surface's other
     // side, and every consumer of its normal has to agree — a foliage card lit through its back
@@ -479,6 +878,23 @@ void main()
             specularLight += frame.lights[lightIndex].specular.rgb
                 * (specularLevel * pow(NdH, specularExponent) * attenuation);
         }
+
+        // The water film's own lobe, on top of the material's: water is a dielectric with its own
+        // Fresnel, so the glint is faint face-on and fierce at grazing — which is the long streak of
+        // sun a wet road throws at a low morning light. Normalised, (n+8)/8pi, so the puddle's much
+        // tighter exponent brightens the peak instead of starving it. One branch on the scene's
+        // rain; a dry frame never reaches it.
+        if (wetness > 0.0 && NdL > 0.0)
+        {
+            float VdH = max(dot(V, H), 0.0);
+            float fresnel = 0.02 + 0.98 * pow(1.0 - VdH, 5.0);
+            float wetExponent = mix(160.0, 1800.0, puddle);
+            float wetStrength = wetness * mix(0.30, 1.0, puddle);
+
+            specularLight += frame.lights[lightIndex].specular.rgb
+                * (wetStrength * fresnel * (wetExponent + 8.0) * 0.125 * INVERSE_PI * pow(NdH, wetExponent)
+                   * attenuation);
+        }
     }
 
     // World space, for the indirect term: a probe is a fact about a place, so everything read from
@@ -501,6 +917,24 @@ void main()
 
     vec3 ambientLight = indirectDiffuse(worldNormal) * (ambientLevel * screenOcclusion);
 
+    // The sky in the road, which is most of what "wet" looks like: the probes' irradiance read
+    // along the reflected ray instead of the normal — a blurry sky, which is exactly what rough wet
+    // asphalt reflects — weighted by water's Fresnel, so it lives at grazing angles and vanishes
+    // looking straight down. A puddle reflects at full strength; damp tarmac at a third. The
+    // screen-space occlusion rides along so a reflection cannot appear under a car that blocks the
+    // sky it would be reflecting. Sharper mirror puddles want the prefiltered specular chain this
+    // model deliberately does not gather; if the seat asks for them, that is the next reach.
+    if (wetness > 0.0)
+    {
+        vec3 incident = normalize(positionInWorldSpace - frame.cameraPosition.xyz);
+        vec3 reflected = reflect(incident, worldNormal);
+        float NdV = max(dot(worldNormal, -incident), 0.0);
+        float fresnelSky = 0.02 + 0.98 * pow(1.0 - NdV, 5.0);
+        float wetMirror = wetness * mix(0.35, 1.0, puddle);
+
+        specularLight += indirectDiffuse(reflected) * (fresnelSky * wetMirror * screenOcclusion);
+    }
+
     // Premultiplied, and the split is the whole point of it: coverage scales the body of the surface
     // and not the highlight. A pane of glass transmits most of what is behind it and still catches
     // the sun at full strength — the highlight is light the surface adds, not light it fails to
@@ -508,5 +942,5 @@ void main()
     // match, which is the same contract PbrFragmentShader writes under.
     vec3 body = albedo.rgb * (ambientLight + diffuseLight);
 
-    fragColor = vec4(body * albedo.a + specularLight, albedo.a);
+    fragColor = vec4(applyFog(body * albedo.a + specularLight, positionInWorldSpace, albedo.a), albedo.a);
 }

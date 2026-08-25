@@ -4,9 +4,10 @@
 layout(location = 0) out vec4 fragColor;
 layout(location = 0) in vec2 textureCoordinates;
 
-// Every input the pass declared, in the order it declared them: the scene colour, the camera's
-// depth attachment beside it (unread here, for the passes that want it), and the top of the bloom
-// chain. The array is declared whole because the set carries it whole — the engine writes every
+// Every input the pass declared, in the order it declared them: the scene colour, the occlusion
+// prepass, and the top of the bloom chain. Only the first and third are read — element 1 is bound
+// and never sampled, which it was before the lens dirt plate existed and is again now that the plate
+// is gone. The array is declared whole because the set carries it whole — the engine writes every
 // element whatever this reads.
 layout(set = SET_POST_PROCESS, binding = POST_INPUT_BINDING) uniform sampler2D inputs[POST_INPUTS];
 
@@ -19,7 +20,7 @@ layout(push_constant) uniform PassParameters {
     vec4 tone;   // x exposure, y contrast, z toe, w shoulder
     vec4 pass;   // x target level, y target levels, zw target size
     vec4 view;   // unread here
-    vec4 effect; // x bloom intensity
+    vec4 effect; // x bloom intensity; y, z and w unread here since the lens dirt plate was removed
 } params;
 
 // Narkowicz's fit of the ACES reference curve. Display-referred on the way out — the sRGB transfer
@@ -43,9 +44,18 @@ void main ()
     // Exposure first, then the spill, then the curve. The bloom chain was thresholded in the
     // exposed domain and holds exposed radiance already, so it is added rather than exposed again —
     // which is what keeps the amount of spill fixed while the meter moves the shutter under it.
-    vec3 exposed = max(texture(inputs[0], textureCoordinates).rgb * exposure, vec3(0.0));
-    exposed += max(texture(inputs[2], textureCoordinates).rgb, vec3(0.0)) * params.effect.x;
+    vec3 scene = max(texture(inputs[0], textureCoordinates).rgb * exposure, vec3(0.0));
+    vec3 spill = max(texture(inputs[2], textureCoordinates).rgb, vec3(0.0));
+    vec3 exposed = scene + spill * params.effect.x;
 
+    // **A fullscreen lens-dirt plate stood here and has been removed (2026-08-24).** It was the first
+    // attempt at grime on the windscreen and it was always the wrong place for it: a plate laid over
+    // the whole aperture is dirt on the *camera*, and the depth mask it needed — anything nearer than
+    // 1.8 m is the cabin, anything past it is the world — was a screen-space reconstruction of a
+    // question the geometry already answers. `WindshieldFragmentShader` answers it properly now: the
+    // car's `GlassInt` carries `extras.shader = "windshield"` and the grime is shaded on the pane
+    // itself, so it sits where the glass is, moves with the car and needs no mask at all.
+    //
     // Contrast is a power law about middle grey in the exposed domain, which is a straight line in
     // log-log: it moves nothing at the pivot and moves everything else symmetrically about it. The
     // floor keeps pow() off zero, where a contrast below one has an infinite derivative.

@@ -25,8 +25,8 @@ namespace osr
 export class ChaseCameraController
 {
     // All in metres, in the car's own heading frame.
-    static constexpr double distanceBehind = 6.5;
-    static constexpr double heightAbove = 2.3;
+    static constexpr double distanceBehind = 3.5;
+    static constexpr double heightAbove = 1.8;
     static constexpr double aimAbove = 0.9;
 
     // Seconds. The position lags noticeably and the aim barely does: a camera whose aim lags is a

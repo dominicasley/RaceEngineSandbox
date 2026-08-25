@@ -62,7 +62,7 @@ Game::Game()
 
     if (options.scene == SceneChoice::Apron)
     {
-        apron.emplace(engine);
+        apron.emplace(engine, options);
     }
     else
     {

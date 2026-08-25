@@ -24,7 +24,8 @@ layout(push_constant) uniform PassParameters {
     vec4 tone;   // unread here
     vec4 pass;   // x target level, y target levels, zw target size
     vec4 view;   // x tan(fovX/2), y tan(fovY/2), z near, w far
-    vec4 effect; // x centre weighting, 0 flat and 1 strongly centred
+    vec4 effect; // x centre weighting, 0 flat and 1 strongly centred; y coverage weighting,
+                 // 0 every pixel counts and 1 a pixel counts by its alpha
 } params;
 
 // Where the centre stops and the falloff begins, as a fraction of the half-diagonal, and what the
@@ -47,8 +48,8 @@ void main()
         // average an exposure meter takes, and the one a handful of specular pinpricks cannot drag
         // the picture off. The floor is what keeps a black pixel from being minus infinity, and
         // C++ floors at the same place so both sides meter a black frame as the same number.
-        const vec3 radiance = texture(inputs[0], textureCoordinates).rgb;
-        const float luminance = dot(max(radiance, vec3(0.0)), vec3(LUMINANCE_R, LUMINANCE_G, LUMINANCE_B));
+        const vec4 sampled = texture(inputs[0], textureCoordinates);
+        const float luminance = dot(max(sampled.rgb, vec3(0.0)), vec3(LUMINANCE_R, LUMINANCE_G, LUMINANCE_B));
 
         // Distance from the centre of the *frame*, not of this square buffer: the reduction target
         // is 512 on both sides and the frame is not, so a radius measured in this buffer's own
@@ -62,7 +63,15 @@ void main()
         // One at the centre, `cornerWeight` at the corner, smooth in between — and mixed by how much
         // weighting was asked for, so zero is the flat average this used to be.
         const float centred = mix(1.0, cornerWeight, smoothstep(centreRadius, 1.0, radius));
-        const float weight = mix(1.0, centred, clamp(params.effect.x, 0.0, 1.0));
+
+        // Coverage weighting, for a meter over one layer's own buffer: where nothing drew, the
+        // alpha is zero and the pixel must not meter as black — a cabin's reading would otherwise
+        // be dragged down by however much of the frame the world outside occupies. At zero this
+        // multiplies by exactly one, which is every meter before the layered frame existed, and a
+        // frame with no coverage at all sums to zero weight, which the readback holds the previous
+        // reading through.
+        const float weight = mix(1.0, centred, clamp(params.effect.x, 0.0, 1.0)) *
+                             mix(1.0, clamp(sampled.a, 0.0, 1.0), clamp(params.effect.y, 0.0, 1.0));
 
         fragColor = vec4(weight * log2(max(luminance, LUMINANCE_FLOOR)), weight, 0.0, 1.0);
 

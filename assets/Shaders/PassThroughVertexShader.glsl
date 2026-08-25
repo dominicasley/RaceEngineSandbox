@@ -43,6 +43,21 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
     ivec4 shadowParams;
     ivec4 probeParams;
     Probe probes[MAX_IBL_PROBES];
+    // Declared past the shading fields for one reason: `rainBody`. The two body axes are the one
+    // part of the rain model that must be resolved per *primitive* rather than per fragment, and
+    // this is the only stage holding the matrix that resolves them. Everything between is here to
+    // reach past, and is documented where it is read.
+    vec4 fogDensity;
+    vec4 fogScatter;
+    vec4 fogAmbient;
+    vec4 timeRain;
+    vec4 rainWind;             // xyz the car's forward direction in world space
+    vec4 wiperArcA;
+    vec4 wiperArcB;
+    vec4 wiperSweep;
+    vec4 wiperTiming;
+    vec4 wiperPane;
+    vec4 rainBody;             // xyz the car's up direction in world space
 } frame;
 
 layout(set = SET_DRAW, binding = 0) uniform DrawData {
@@ -83,6 +98,24 @@ layout(location = 8) out vec3 lightDirectionWorldSpace[MAX_LIGHTS];
 // Fragment stages that do not blend never declare it. That is already the norm here — the whole of
 // ColourFragmentShader declares none of these twelve — and is why an unread output is safe.
 layout(location = 8 + MAX_LIGHTS) out vec3 positionInModelSpace;
+// The car's own two axes, expressed in the model space of *this* primitive, and the primitive's own
+// normal in that same space. Together with positionInModelSpace they are a complete, body-fixed,
+// metric description of the surface, which is what the rain on a windscreen is built on.
+//
+// **They are resolved here because only this stage holds `localToWorld`.** A glTF node transform is
+// baked into a per-mesh matrix rather than into the vertex data, so each mesh has a model space of
+// its own and "which way is up in it" is a different answer per primitive — but it is the *same*
+// answer for every vertex of one, and it does not change as the car drives. Resolving it per
+// fragment would mean recovering a basis from screen-space derivatives, which is the mechanism that
+// has produced four separate rain defects: the derivatives jitter, and anything that multiplies an
+// accumulating displacement has to be exact rather than merely close.
+//
+// The inverse rotation is `transpose(mat3(localToWorld))`, which is the true inverse only up to a
+// scale for a matrix that rotates and scales uniformly — the fragment stage normalises, so the
+// scale falls out. A non-uniformly scaled node would skew these; no car body carries one.
+layout(location = 9 + MAX_LIGHTS) out vec3 bodyUpInModelSpace;
+layout(location = 10 + MAX_LIGHTS) out vec3 bodyForwardInModelSpace;
+layout(location = 11 + MAX_LIGHTS) out vec3 normalsInModelSpace;
 // tangentBinormalNormalMatrix stays local: no fragment stage reads it, and an output no
 // fragment shader consumes is a stage-interface mismatch once SPIR-V is optimized.
 
@@ -103,6 +136,17 @@ void main()
 
     textureCoordinates = vertexTextureCoordinates;
     positionInModelSpace = vertexPositionModelSpace;
+    normalsInModelSpace = vertexNormalModelSpace;
+
+    // A scene that has stated no car — every scene but the one with a windscreen in it — leaves
+    // both axes zero, and a zero direction normalised in the fragment stage is a NaN that would
+    // reach the shading of every pane. The world's own axes stand in, which is what a pane with no
+    // car behind it should assume anyway.
+    mat3 worldToModelRotation = transpose(mat3(draw.localToWorld));
+    vec3 bodyUpWorld = dot(frame.rainBody.xyz, frame.rainBody.xyz) > 1e-8 ? frame.rainBody.xyz : vec3(0.0, 1.0, 0.0);
+    vec3 bodyForwardWorld = dot(frame.rainWind.xyz, frame.rainWind.xyz) > 1e-8 ? frame.rainWind.xyz : vec3(0.0, 0.0, 1.0);
+    bodyUpInModelSpace = worldToModelRotation * bodyUpWorld;
+    bodyForwardInModelSpace = worldToModelRotation * bodyForwardWorld;
     positionInWorldSpace = vec3(draw.localToWorld * boneTransform * vec4(vertexPositionModelSpace, 1.0));
     positionInViewSpace = vec3(draw.localToView * boneTransform * vec4(vertexPositionModelSpace, 1.0));
 

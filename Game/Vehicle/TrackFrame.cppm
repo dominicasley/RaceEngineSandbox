@@ -33,6 +33,13 @@ export [[nodiscard]] inline glm::dvec3 toWorldUnits(const glm::dvec3& metres)
     return trackOrigin() + metres * worldUnitsPerMetre;
 }
 
+// The way back, for the one thing that needs it: reporting where something in the drawn world is in
+// the units every knob and every measurement in this project is stated in.
+export [[nodiscard]] inline glm::dvec3 toMetres(const glm::dvec3& worldUnits)
+{
+    return (worldUnits - trackOrigin()) / worldUnitsPerMetre;
+}
+
 // A direction carries the scale and not the origin, which is the whole reason this is two
 // functions rather than one applied twice.
 export [[nodiscard]] inline glm::dvec3 directionToWorldUnits(const glm::dvec3& metres)

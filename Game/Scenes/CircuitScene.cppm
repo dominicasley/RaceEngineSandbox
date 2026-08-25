@@ -1,10 +1,13 @@
 module;
 
+#include <algorithm>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 export module osr.game:CircuitScene;
 
@@ -19,6 +22,7 @@ import :RenderRig;
 import :Simulation;
 import :SimulatedCar;
 import :TrackFrame;
+import :WiperController;
 
 import raceengine;
 
@@ -65,11 +69,57 @@ private:
     static constexpr float cockpitCompensation = -1.25f;
     std::optional<FPSCameraController> freeCamera;
 
+    // Whether the free camera is currently flying, and the edge state of the key that toggles it.
+    // Level to edge for the same reason the telemetry key is: `keyPressed` answers on every one of a
+    // hundred and twenty ticks a second, so a held key would toggle a hundred and twenty times.
+    bool freeCameraEngaged = false;
+    bool cameraKeyHeld = false;
+    bool poseKeyHeld = false;
+
+    // Print where this camera stands and which way it points, as the command line that puts a
+    // camera back there. Level to edge for the reason the two keys above are.
+    void logCameraPose() const;
+
+    // Which controller the scene was built with, so leaving the free camera puts it back rather than
+    // guessing. A scene launched with OSR_CAMERA=fixed has no other controller to return to and
+    // stays where it is.
+    CameraChoice configuredCamera = CameraChoice::Chase;
+
+    void toggleFreeCamera();
+
     RenderableModel* sky;
+    // The layered frame's other two cameras and the composite between them, handed back by the rig.
+    // `camera` above is the pose camera and the world layer's; these follow it every tick
+    // (syncLayeredCameras), and the exposure policy — linked outside the car, split in the cockpit —
+    // is this scene's to run because only it knows which view is live.
+    Camera* carCamera = nullptr;
+    Camera* frameCamera = nullptr;
+    raceengine::Resource<raceengine::PostProcess> composite{};
     // Built in the body rather than the initialiser list because both need the "pbr" shader, which
     // the render rig creates down there out of a file this scene awaits.
     std::optional<CarEntity> car;
     std::optional<PlayerCar> player;
+
+    // The rain's airflow phase, accumulated here because the shader is stateless: a drop's
+    // position is the airstream's shear *integrated*, and handing the shader only the current
+    // speed would teleport every drop the moment the speed changed. The shear grows with the
+    // square of the speed, so what accumulates is speed squared over simulated ticks — a function
+    // of the tick count under a capture, so a captured frame N carries the same value on every
+    // machine. Double, because a float accumulating 8 ms slices loses its low bits within a lap
+    // or two.
+    bool raining = false;
+    double rainAirflowPhase = 0.0;
+
+    // The airspeed the *water* is responding to, which lags the car's. Water on glass has mass and
+    // surface tension, so it does not know the car has stopped until it has had a moment to find
+    // out — and without that moment a hard stop swings the drift from "blown back" to "running
+    // down" inside a couple of ticks and the droplets visibly wiggle as they re-aim. The shader
+    // cannot hold this: it is stateless by design, so the lag lives here, where state is allowed.
+    double rainDampedSpeed = 0.0;
+
+    // The stalk. Off until the driver asks for it, like every other thing on this car that a real
+    // one has switched on — and off is what keeps both gates byte-identical.
+    WiperController wipers;
 
 public:
     CircuitScene(raceengine::Engine& engine, const RunOptions& options);
@@ -125,14 +175,20 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     engine.camera().setClippingPlanes(camera, 1.0f, 55000.0f);
 
     // Where the adaptation starts and what the camera holds until the first reading comes back.
-    // Measured rather than guessed: the chase view settles at 19.2, and seeding anywhere near the
-    // apron's 2.5 leaves a 120-frame capture still climbing.
-    engine.camera().setExposure(camera, 18.0f);
+    //
+    // **Re-measured whenever the light changes, and moving the sun is a change of light.** Seeding
+    // far from the answer leaves a 120-frame capture partway along the adaptation curve, which is a
+    // transient the parity gate would then be holding rather than a settled frame. Under the
+    // six-degree morning sun the chase view — the one the driving gate captures — settles at 8.79.
+    // It was 18.0 under the 45-degree sun, which is over a stop out.
+    engine.camera().setExposure(camera, 8.79f);
 
     // Never lookAtPoint: whichever controller is engaged below writes the direction on every tick,
     // so a framing stated here would be overwritten before the first frame — which is precisely
     // what happened to the aerial spawn view this scene used to have, for long enough to be worth a
     // note in the engine's own documentation.
+    configuredCamera = options.camera;
+
     if (options.camera == CameraChoice::Chase)
     {
         // The game as it is played, and the view the driving gate captures: it writes the position
@@ -152,14 +208,48 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         // circuit from by hand. It was the rendering gate's framing for a while and was a poor one:
         // three flat regions, no car, nothing with a texture on it, and not a pixel either clipped
         // or under 2/255. The apron scene is the fixture now.
-        const auto stand = toWorldUnits(glm::dvec3(-660.0, 195.8, 1216.0)); // TEMP fence-shadow probe
+        //
+        // **`OSR_CAM_POS` and `OSR_CAM_LOOK` override the two halves of this, and that is what makes
+        // a view somebody else saw reproducible.** They were added for the ground-transparency
+        // report, which has only ever been seen from a free camera looking into the low sun and
+        // which four sessions have now theorised about without once getting it into a capture. The
+        // `P` key prints the pose in exactly the form these take, so a driver hands over a line
+        // rather than a description of a place.
+        const auto standMetres = options.cameraPose.positionStated
+                                     ? glm::dvec3(options.cameraPose.xMetres, options.cameraPose.yMetres,
+                                                  options.cameraPose.zMetres)
+                                     : glm::dvec3(-660.0, 195.8, 1216.0);
+        const auto stand = toWorldUnits(standMetres);
         engine.camera().setPosition(camera, static_cast<float>(stand.x), static_cast<float>(stand.y),
                                     static_cast<float>(stand.z));
-        freeCamera.emplace(engine, 1.5708, -0.08); // TEMP look along +x
+
+        // Radians, and the scene's own two are stated in radians rather than converted from degrees
+        // so that leaving both variables unset is this camera exactly as it was.
+        const auto yaw = options.cameraPose.lookStated ? glm::radians(options.cameraPose.yawDegrees) : 1.5708;
+        const auto pitch = options.cameraPose.lookStated ? glm::radians(options.cameraPose.pitchDegrees) : -0.08;
+        freeCamera.emplace(engine, yaw, pitch);
     }
 
     // Three kilometres: outside every point of the circuit from every point a camera can stand.
-    sky = &buildRenderRig(engine, scene, camera, 30000.0f);
+    // Bathurst's pit straight stands at about 350 world units — thirty-five metres — and that is
+    // where the fog's density is quoted, so the layer sits on the circuit rather than under it.
+    // The Mountain climbs 174 m out of that, which at the rig's hundred-metre scale height puts
+    // the top of it in a fifth of the air the pit lane stands in.
+    //
+    // A fullscreen lens dirt plate was turned on here for the cockpit and is gone (2026-08-24). It
+    // needed the scene to know which view looked through glass; `WindshieldFragmentShader` does not,
+    // because the glass is geometry the car carries and the grime is shaded on it. Every camera now
+    // gets the same rig, which is one fewer thing for a view to have an opinion about.
+    const auto rig = buildRenderRig(engine, scene, camera, 30000.0f,
+                                    RigAir{.baseHeight = 350.0f,
+                                           .densityScale = static_cast<float>(options.fogDensityScale),
+                                           .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
+                                           .rain = static_cast<float>(options.rainIntensity)});
+    sky = rig.sky;
+    carCamera = rig.carCamera;
+    frameCamera = rig.frameCamera;
+    composite = rig.composite;
+    raining = options.rainIntensity > 0.0;
 
     // The car's own sound bank, from the folder the Assetto Corsa car shipped as. Not fatal: a car
     // with no sound is a car that still drives, and a scene that refused to load over a missing
@@ -175,21 +265,28 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
 
     if (cockpitCamera)
     {
-        // A cockpit is a different photographic problem from every other view this game has, which
-        // is why the rig's compensation does not survive it. Outside the car the subject is dark
-        // against a bright sky and the meter has to be told to open up for it; from the seat the
-        // *frame* is a dark cabin with a bright hole in the middle of it, and the rig's centre
-        // weighting points the meter straight down that hole. Left at +1.50 EV the windscreen
-        // prints as paper and takes the dashboard with it.
+        // A cockpit is a different photographic problem from every other view this game has, and
+        // under the layered frame it finally gets the honest answer: the meters split. The world
+        // meters its own buffer with the rig's outdoor dial, the cabin meters its own pixels —
+        // coverage-weighted, so the world showing through the windscreen does not vote — and the
+        // cabin's reading drives the shared lens while the world rides the composite at its own.
+        // One meter could never serve both: a sunlit world is several stops above a car's cabin,
+        // and the single-meter era answered it with a −1.25 EV shove on a full-frame reading.
         //
         // **After the rig and not before it.** `AutoExposureService::enable` assigns the whole meter,
-        // so an override written earlier is overwritten by the rig — which is exactly what happened,
-        // and it presented as a compensation that changed nothing at all: two runs a stop apart both
-        // settled on an exposure of 18.18.
+        // so an override written earlier is overwritten by the rig — which is exactly what happened
+        // once, and it presented as a compensation that changed nothing at all: two runs a stop
+        // apart both settled on an exposure of 18.18.
         //
-        // Compensation rather than the weighting, because it is the one of the two that is read
-        // live: the weighting is written into the reduction pass when metering is enabled.
-        camera.autoExposure.compensation = cockpitCompensation;
+        // The compensation carried over is the old cockpit dial. Its metering base has changed —
+        // cabin pixels only, where it was tuned on the full frame — so it is a starting point for
+        // Dominic's eye, not a settled number.
+        splitExposure(engine, camera, *carCamera, *frameCamera);
+        carCamera->autoExposure.compensation = cockpitCompensation;
+        // The cabin has a roof: from the seat, the car layer is the interior, and a wet dashboard
+        // is wrong however hard it rains outside. The world's surfaces and the streaks through the
+        // glass are untouched — the scale is this view's alone.
+        carCamera->rainScale = 0.0f;
     }
 
     // The circuit itself — the visual export, while the surfaces being driven on come from the
@@ -282,13 +379,178 @@ CircuitScene::~CircuitScene()
 // simulation and waits for it under a capture, and returns immediately otherwise. `collect` takes
 // one snapshot and draws everything from it, so the node, the rim, the sound and the camera are all
 // the same instant of car rather than several fields sampled as the tick moved under them.
+// Into the free camera and back out again.
+//
+// **It starts where the view already is**, which is the whole of what makes it useful: the free
+// camera writes the direction from its own yaw and pitch on every tick (see FPSCameraController), so
+// one constructed at a default would snap the view somewhere else the instant it engaged. Seeding it
+// from the camera's current direction means pressing the key steps *out* of the car from exactly
+// where you were looking.
+//
+// Leaving it puts back whichever controller this scene was built with. A scene launched with
+// `OSR_CAMERA=fixed` was already the free camera and has nothing to return to, so the key does
+// nothing there rather than stranding the view.
+void CircuitScene::toggleFreeCamera()
+{
+    if (configuredCamera == CameraChoice::Fixed)
+    {
+        return;
+    }
+
+    freeCameraEngaged = !freeCameraEngaged;
+
+    if (freeCameraEngaged)
+    {
+        chaseCamera.reset();
+        cockpitCamera.reset();
+
+        // Yaw about world up and pitch above the horizon, recovered from the direction the camera is
+        // pointing this instant. atan2(x, z) rather than (z, x): zero yaw looks along positive z,
+        // which is the convention the controller builds its direction back from.
+        const auto direction = glm::normalize(camera.direction);
+        const auto yaw = std::atan2(static_cast<double>(direction.x), static_cast<double>(direction.z));
+        const auto pitch = std::asin(static_cast<double>(std::clamp(direction.y, -1.0f, 1.0f)));
+
+        freeCamera.emplace(engine, yaw, pitch);
+
+        // The meters link back the moment the view is outside the car: a free camera is one eye on
+        // one world, and the frame's own meter — still carrying the rig's outdoor dial — resumes.
+        // Unconditional because from the chase camera this is the state already. The car's rain
+        // comes back with it: outside the car, its bodywork stands in the weather.
+        linkExposure(engine, camera, *carCamera, *frameCamera, composite);
+        carCamera->rainScale = 1.0f;
+
+        return;
+    }
+
+    freeCamera.reset();
+
+    // The cursor goes back to the desktop's: the free camera captured it for mouse-look, and a
+    // driving view has no use for a pointer it has hidden and pinned.
+    engine.window().setCursorMode(raceengine::CursorMode::Normal);
+
+    if (configuredCamera == CameraChoice::Chase)
+    {
+        chaseCamera.emplace(engine);
+
+        return;
+    }
+
+    cockpitCamera.emplace(engine);
+    // Back into the seat, back onto split meters — the cabin's own dial included, and the cabin's
+    // roof with it.
+    splitExposure(engine, camera, *carCamera, *frameCamera);
+    carCamera->autoExposure.compensation = cockpitCompensation;
+    carCamera->rainScale = 0.0f;
+}
+
+// Printed as the command line that reproduces it rather than as a position and a direction, because
+// what is wanted from it is never the numbers — it is standing where the person who saw something
+// was standing. A direction vector cannot be pasted into `OSR_CAM_LOOK`, so this converts back to
+// the yaw and pitch that produced it: atan2(x, z) rather than (z, x), since zero yaw looks along
+// positive z, which is the convention `FPSCameraController` builds its direction from.
+//
+// It reports whatever camera is live, chase and cockpit included — those cannot be *restored* by the
+// two variables, but a chase view is still a place worth being able to name, and refusing to print
+// it would make the key useless from the one seat the game is normally driven from.
+void CircuitScene::logCameraPose() const
+{
+    const auto metres = toMetres(glm::dvec3(camera.position));
+    const auto direction = glm::normalize(camera.direction);
+    const auto yaw = glm::degrees(std::atan2(static_cast<double>(direction.x), static_cast<double>(direction.z)));
+    const auto pitch = glm::degrees(std::asin(static_cast<double>(std::clamp(direction.y, -1.0f, 1.0f))));
+
+    engine.log().info("Camera here: OSR_SCENE=circuit OSR_CAMERA=fixed "
+                      "OSR_CAM_POS={:.1f},{:.1f},{:.1f} OSR_CAM_LOOK={:.2f},{:.2f}",
+                      metres.x, metres.y, metres.z, yaw, pitch);
+}
+
 void CircuitScene::update(float delta)
 {
     player->publish();
     simulation->advance(Simulation::ticksPerEngineTick);
     player->collect();
 
-    if (chaseCamera)
+    // The wipers, on the engine's own clock rather than a second one kept here: the shader inverts
+    // the same sweep law to work out what the blade cleared, so the two must agree about what time
+    // it is or the clearing lands where the blade is not.
+    wipers.readStalk(engine.window().keyPressed(raceengine::Key::V));
+    wipers.update(engine.simulatedSeconds());
+    orThrow(engine.scene().setWipers(scene, wipers.state()));
+
+    // The rain's drift, integrated against the fixed step rather than `delta` so a captured run's
+    // frame N carries the same phase on every machine. Skipped dry so a dry run's frame block is
+    // byte-for-byte the one this engine uploaded before rain existed — and taken when the wipers
+    // are running whatever the weather, because the same heading is what tells the shader which
+    // pane is the windscreen.
+    if (raining || wipers.running())
+    {
+        // Ground speed, and specifically the horizontal part of it: this is the airstream the body
+        // is driving into, so it is the chassis' velocity across the ground and never a wheel's —
+        // a locked or spinning wheel says nothing about how fast the car is meeting the air. The
+        // vertical component is the suspension breathing over kerbs and is not wind.
+        const auto velocity = player->vehicle().chassis.linearVelocity;
+        const auto speed = glm::length(glm::dvec2(velocity.x, velocity.z));
+
+        // One time constant, and the drift follows it rather than the pedal. Both the rate and its
+        // integral are taken from the damped speed, so the two never disagree about how fast the
+        // air is moving — feeding the shader a damped rate against an undamped accumulation would
+        // put the drops somewhere their own velocity says they cannot be.
+        constexpr auto rainSpeedResponseSeconds = 0.4;
+        const auto step = static_cast<double>(raceengine::Engine::fixedTimeStep);
+        rainDampedSpeed += (speed - rainDampedSpeed) * (1.0 - std::exp(-step / rainSpeedResponseSeconds));
+
+        // The airspeed the water answers to, and it stops climbing here. Drift grows with the
+        // *square* of the speed, so without a ceiling a fast lap sends the streaks up the glass
+        // faster than the eye can follow and the pane reads as static noise. Capped rather than
+        // curved because a drop torn off the glass has left, and how fast it went on the way is not
+        // something the screen can show. About 70 km/h, settled from the seat between one figure
+        // that still ran too fast to read and a second that ran too slow. Applied before the
+        // integral as well as to the rate, so a drop's position and its velocity never disagree.
+        constexpr auto rainAirspeedCapMetresPerSecond = 19.5;
+        const auto airspeed = std::min(rainDampedSpeed, rainAirspeedCapMetresPerSecond);
+        rainAirflowPhase += airspeed * airspeed * step;
+
+        // The body's own two axes, and **neither of them flattened**. Both rotate with the car, so
+        // the pane and the forces on it tilt together and the projection between them — which is
+        // all the drift reads — is invariant to pitch, roll and heading alike. A heading flattened
+        // to the horizontal was the last version of this, and it leans against the body every time
+        // the car pitches; a lean multiplied by a displacement that has been accumulating all lap
+        // is what put the water on a shear rather than on a slide.
+        const auto& orientation = player->vehicle().chassis.orientation;
+        const auto forward = orientation * glm::dvec3(0.0, 0.0, 1.0);
+        const auto bodyUp = orientation * glm::dvec3(0.0, 1.0, 0.0);
+
+        orThrow(engine.scene().setRainMotion(
+            scene, static_cast<float>(airspeed), static_cast<float>(rainAirflowPhase),
+            glm::vec3(static_cast<float>(forward.x), static_cast<float>(forward.y), static_cast<float>(forward.z)),
+            glm::vec3(static_cast<float>(bodyUp.x), static_cast<float>(bodyUp.y), static_cast<float>(bodyUp.z))));
+    }
+
+    // Level to edge, then act on the edge alone.
+    const auto cameraKey = engine.window().keyPressed(raceengine::Key::C);
+    if (cameraKey && !cameraKeyHeld)
+    {
+        toggleFreeCamera();
+    }
+
+    cameraKeyHeld = cameraKey;
+
+    // Read before the controllers write, so what it prints is the view that was on screen when the
+    // key went down rather than the one the next frame is about to show.
+    const auto poseKey = engine.window().keyPressed(raceengine::Key::P);
+    if (poseKey && !poseKeyHeld)
+    {
+        logCameraPose();
+    }
+
+    poseKeyHeld = poseKey;
+
+    if (freeCamera)
+    {
+        freeCamera->update(camera, delta);
+    }
+    else if (chaseCamera)
     {
         chaseCamera->update(camera, player->vehicle(), player->acceleration(), delta);
     }
@@ -296,10 +558,17 @@ void CircuitScene::update(float delta)
     {
         cockpitCamera->update(camera, player->vehicle());
     }
-    else if (freeCamera)
+
+    // The cockpit's split meters, carried across every tick the seat view is live: the cabin's
+    // reading onto the shared lens, the world's onto the composite. A tick behind the meters, which
+    // the adaptation's own seconds-long closing makes invisible.
+    if (cockpitCamera)
     {
-        freeCamera->update(camera, delta);
+        applySplitExposure(engine, camera, *carCamera, *frameCamera, composite);
     }
+
+    // After whatever steered the pose camera, so all three views record this tick's eye.
+    syncLayeredCameras(camera, *carCamera, *frameCamera);
 
     engine.sceneManager().setPosition(sky->node, camera.position.x, camera.position.y, camera.position.z);
 }

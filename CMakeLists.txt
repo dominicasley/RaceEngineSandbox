@@ -31,7 +31,8 @@ target_sources(OpenStreetRace PRIVATE
         Game/Vehicle/SimulatedCar.cppm
         Game/Vehicle/Simulation.cppm
         Game/Vehicle/SteeringController.cppm
-        Game/Vehicle/TrackFrame.cppm)
+        Game/Vehicle/TrackFrame.cppm
+        Game/Vehicle/WiperController.cppm)
 
 find_package(spdlog CONFIG REQUIRED)
 

@@ -1,5 +1,6 @@
 module;
 
+#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <stdexcept>
@@ -59,6 +60,34 @@ export struct AssistSelection
     bool cornering = false;
 };
 
+// Where the fixed camera stands and which way it points, when this run wants to say rather than
+// take the scene's own.
+//
+// **This exists to reproduce a view somebody else saw, which is a thing this project has needed and
+// not had.** A bug reported from the seat — "the ground looks transparent from up here" — is a claim
+// about a *view*, and the only way to test it is to stand in the same place looking the same way.
+// Every other knob here describes the world; this one describes the observer.
+//
+// The two halves are stated separately because they are wanted separately: re-aiming from the
+// scene's own stand is a common thing to want, and so is standing somewhere else and keeping the
+// heading. Whichever is unstated stays the scene's.
+export struct CameraPose
+{
+    // Metres of track coordinates, which is what the scene states its own stand in and what the
+    // physics world is in. The tenth-of-a-metre world unit is applied at the seam, as everywhere.
+    bool positionStated = false;
+    double xMetres = 0.0;
+    double yMetres = 0.0;
+    double zMetres = 0.0;
+
+    // Degrees. Zero yaw looks along positive z and positive pitch is above the horizon, which is
+    // the convention `FPSCameraController` builds its direction back from — the same one the pose
+    // the game prints is written in, so what it prints can be pasted back verbatim.
+    bool lookStated = false;
+    double yawDegrees = 0.0;
+    double pitchDegrees = 0.0;
+};
+
 export struct RunOptions
 {
     SceneChoice scene = SceneChoice::Circuit;
@@ -103,6 +132,45 @@ export struct RunOptions
     // assist that does nothing — and `none` exists so that forcing them off is a word rather than
     // the absence of one.
     AssistSelection assists{};
+
+    // A multiplier on the rig's fog density. `OSR_FOG`, a number, or the word `off` for zero; unset
+    // is 1.0, which is the rig's own figure untouched.
+    //
+    // Here for `OSR_BELT_MM`'s reason and with the same standing: how much air a scene stands in is
+    // a look decision, the look is Dominic's, and a knob that needs a rebuild between two readings
+    // is a knob nobody turns. It is a *multiplier* rather than a density because what is being
+    // compared is thicker-or-thinner against a settled starting point, and because `off` then has an
+    // unambiguous meaning — the same frame this engine drew before there was any fog in it, which is
+    // the A/B the whole feature has to be judged against.
+    //
+    // Outside the cross-variable validation, again for that knob's reason: those three refuse
+    // combinations that cannot exist, and the air has no partner to contradict.
+    double fogDensityScale = 0.5;
+
+    // How hard the rain falls, 0..1-ish. `OSR_RAIN`, a number, or the word `off`; unset is 0.0,
+    // the dry scene — off is the default here where the fog's default is the rig's own figure,
+    // because the rig authors a fog and authors no rain. A look knob outside the cross-variable
+    // validation for the fog knob's reason exactly.
+    double rainIntensity = 1.0;
+
+    // The sun's elevation above the horizon, in degrees. `OSR_SUN`; the default is the rig's own
+    // early-morning figure.
+    //
+    // **This is the time of day, and it is one number because everything else derives from it**: the
+    // sky is a scattering integral that follows the light, the probes photograph that sky and hand it
+    // back as indirect light, and the fog takes its shafts from the sun's colour and its haze from
+    // those probes. Nothing else has to be told the hour.
+    //
+    // A knob rather than a constant because how low a sunrise wants to be is a look decision made in
+    // the seat: at six degrees the world is dim and the drama is all in the sky, and by twelve the
+    // light rakes across the track and the ground is legible again. Negative is allowed and is the
+    // sun below the horizon — a legitimate scene, and a very dark one.
+    double sunElevationDegrees = 6.0;
+
+    // `OSR_CAM_POS` and `OSR_CAM_LOOK`. Inside the cross-variable validation rather than beside it,
+    // unlike the look multipliers: this one *does* have a partner to contradict, because only the
+    // fixed camera has a stand for it to name.
+    CameraPose cameraPose{};
 };
 
 export [[nodiscard]] RunOptions runOptions();
@@ -340,19 +408,246 @@ namespace
     return millimetres;
 }
 
+// A look multiplier: a number, or the word `off` for the control. It served two knobs until the lens
+// dirt plate was removed (2026-08-24) and is kept as a function rather than inlined into `OSR_FOG`
+// because the next one of these will want it and because `off` is worth stating once.
+[[nodiscard]] double lookMultiplier(const char* name)
+{
+    const auto value = setting(name);
+    if (value.empty())
+    {
+        return 1.0;
+    }
+
+    // A word rather than a magic zero for the case that matters most, and for `OSR_ASSISTS`'s
+    // reason: "none of this effect" is the control every judgement about it is made against, and it
+    // should not be spelled as something somebody has to recognise.
+    if (value == "off")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto scale = 0.0;
+
+    try
+    {
+        scale = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error(std::string(name) + " is neither a number nor 'off': '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error(std::string(name) + " is neither a number nor 'off': '" + value + "'.");
+    }
+
+    if (scale < 0.0)
+    {
+        throw std::runtime_error(std::string(name) + " cannot be negative: '" + value +
+                                 "'. It multiplies the scene's own figure; 'off' or 0 is none of it.");
+    }
+
+    return scale;
+}
+
+// The rain, `OSR_RAIN`: a number for how hard it falls, `off` or unset for the dry scene. Not
+// `lookMultiplier`, whose unset means "the rig's own figure untouched" — there is no authored
+// rain for a multiplier to leave untouched, so unset here is zero and `off` is the same statement
+// made as a word.
+[[nodiscard]] double rainIntensity()
+{
+    const auto value = setting("OSR_RAIN");
+    if (value.empty() || value == "off")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto intensity = 0.0;
+
+    try
+    {
+        intensity = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_RAIN is neither a number nor 'off': '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_RAIN is neither a number nor 'off': '" + value + "'.");
+    }
+
+    if (intensity < 0.0)
+    {
+        throw std::runtime_error("OSR_RAIN cannot be negative: '" + value + "'. 'off' or 0 is the dry scene.");
+    }
+
+    return intensity;
+}
+
+// Degrees rather than a multiplier, so this one is parsed on its own terms: there is no "off" for a
+// time of day, and the range refused is the one that is not an elevation at all.
+[[nodiscard]] double sunElevationDegrees()
+{
+    const auto value = setting("OSR_SUN");
+    if (value.empty())
+    {
+        return 6.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto degrees = 0.0;
+
+    try
+    {
+        degrees = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_SUN is not a number of degrees: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_SUN is not a number of degrees: '" + value + "'.");
+    }
+
+    // Below the horizon is night and is allowed; past the zenith is not a sun angle.
+    if (degrees < -20.0 || degrees > 90.0)
+    {
+        throw std::runtime_error("OSR_SUN is an elevation in degrees and lies between -20 and 90: '" + value + "'.");
+    }
+
+    return degrees;
+}
+
+// A comma-separated list of exactly `count` numbers, refused rather than padded or truncated if it
+// is not. Shared by the two halves of the camera pose because they differ only in how many numbers
+// they want and in what those numbers mean — and because a knob whose whole purpose is to reproduce
+// somebody else's view must refuse a mistyped one loudly, or it stands somewhere else and the
+// artefact simply is not there.
+[[nodiscard]] std::array<double, 3> numbers(const char* name, const std::string& value, const std::size_t count,
+                                            const char* form)
+{
+    auto parsed = std::array<double, 3>{};
+    auto found = std::size_t{0};
+    auto from = std::string::size_type{0};
+
+    while (true)
+    {
+        const auto to = value.find(',', from);
+        const auto word = value.substr(from, to == std::string::npos ? std::string::npos : to - from);
+
+        if (found == count)
+        {
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and this states more: '" + value +
+                                     "'.");
+        }
+
+        auto consumed = std::size_t{0};
+
+        try
+        {
+            parsed.at(found) = std::stod(word, &consumed);
+        }
+        catch (const std::exception&)
+        {
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word +
+                                     "' is not a number: '" + value + "'.");
+        }
+
+        if (consumed != word.size())
+        {
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word +
+                                     "' is not a number: '" + value + "'.");
+        }
+
+        ++found;
+
+        if (to == std::string::npos)
+        {
+            break;
+        }
+
+        from = to + 1;
+    }
+
+    if (found != count)
+    {
+        throw std::runtime_error(std::string(name) + " takes " + form + ", and this states fewer: '" + value + "'.");
+    }
+
+    return parsed;
+}
+
+[[nodiscard]] CameraPose cameraPose(const CameraChoice chosen)
+{
+    auto pose = CameraPose{};
+
+    const auto position = setting("OSR_CAM_POS");
+    const auto look = setting("OSR_CAM_LOOK");
+
+    if (position.empty() && look.empty())
+    {
+        return pose;
+    }
+
+    // Both name where the *fixed* camera stands, and the other two cameras have no stand to name:
+    // the chase and cockpit controllers compute a position and a direction from the car on every
+    // tick, so a pose stated for one of those would be overwritten before the first frame — which
+    // reads exactly like the variable being ignored, and this file exists to refuse that.
+    if (chosen != CameraChoice::Fixed)
+    {
+        throw std::runtime_error("OSR_CAM_POS and OSR_CAM_LOOK place the fixed camera, and this run asks for the "
+                                 "chase or cockpit camera, which writes its own position and direction from the car "
+                                 "on every tick. Name OSR_CAMERA=fixed alongside them.");
+    }
+
+    if (!position.empty())
+    {
+        const auto metres = numbers("OSR_CAM_POS", position, 3, "three comma-separated metres, 'x,y,z'");
+
+        pose.positionStated = true;
+        pose.xMetres = metres.at(0);
+        pose.yMetres = metres.at(1);
+        pose.zMetres = metres.at(2);
+    }
+
+    if (!look.empty())
+    {
+        const auto degrees = numbers("OSR_CAM_LOOK", look, 2, "two comma-separated degrees, 'yaw,pitch'");
+
+        pose.lookStated = true;
+        pose.yawDegrees = degrees.at(0);
+        pose.pitchDegrees = degrees.at(1);
+    }
+
+    return pose;
+}
+
 } // namespace
 
 RunOptions runOptions()
 {
     const auto chosen = scene();
+    const auto chosenCamera = camera(chosen);
     const auto chosenAssists = assists();
 
     return RunOptions{.scene = chosen,
-                      .camera = camera(chosen),
+                      .camera = chosenCamera,
                       .driver = driver(chosen),
                       .rackTrace = rackTrace(chosen),
                       .beltBridgingMillimetres = beltBridgingMillimetres(),
-                      .assists = chosenAssists};
+                      .assists = chosenAssists,
+                      .fogDensityScale = lookMultiplier("OSR_FOG"),
+                      .rainIntensity = rainIntensity(),
+                      .sunElevationDegrees = sunElevationDegrees(),
+                      .cameraPose = cameraPose(chosenCamera)};
 }
 
 } // namespace osr
