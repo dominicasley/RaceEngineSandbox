@@ -56,6 +56,14 @@ private:
     // the render rig creates down there out of a file this scene awaits.
     std::optional<CarEntity> car;
 
+    // The rig's effective cloud coverage and the one job it leaves the scene: the scheduled probe
+    // re-photograph, a function of the tick count that never fires on a clear sky.
+    float cloudCoverage = 0.0f;
+    CloudProbeRecapture cloudRecapture;
+    // And the per-frame one: how often the dome actually marches. See CircuitScene's for why it
+    // rides the frame callback and not the tick.
+    CloudMarchSchedule cloudMarch;
+
 public:
     // Takes the run's configuration for one thing only: how much air the fixture stands in. The
     // rest of `RunOptions` is the circuit's — this scene has no camera to choose, no driver and
@@ -104,6 +112,8 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     camera(orThrow(engine.scene().createCamera(scene))),
     freeCamera(engine, cameraYaw, cameraPitch)
 {
+    camera.debugName = "apron";
+
     // The number that turns this scene's relative radiance — a sun of 3.2 and an asphalt albedo of
     // about 0.1 — into a picture, and where the meter's adaptation starts from. 4.75 because the
     // meter's own answer on this framing is 4.78: seeding at the answer means the captured frame is
@@ -130,14 +140,29 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     engine.camera().setPosition(camera, cameraStand.x, cameraStand.y, cameraStand.z);
 
     // The apron's ground is y = 0, so the fog layer is quoted where the fixture actually stands.
+    // The rig speaks in float and the options in double, and the conversion has to keep "unset"
+    // unset: an absent blend weight is the dome's old transmittance-weighted accumulator, which is a
+    // different thing from any number.
+    const auto cloudBlend = options.cloudBlendWeight.has_value()
+                                ? std::optional<float>(static_cast<float>(options.cloudBlendWeight.value()))
+                                : std::optional<float>{};
+
     const auto rig = buildRenderRig(engine, scene, camera, 2500.0f,
                                     RigAir{.baseHeight = 0.0f,
                                            .densityScale = static_cast<float>(options.fogDensityScale),
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
-                                           .rain = static_cast<float>(options.rainIntensity)});
+                                           .rain = static_cast<float>(options.rainIntensity),
+                                           .clouds = static_cast<float>(options.cloudCoverage),
+                                           .cloudMapWidth = options.cloudMapWidth,
+                                           .cloudMapHeight = options.cloudMapHeight,
+                                           .cloudBlendWeight = cloudBlend,
+                                           .cloudMarchInterval = options.cloudMarchInterval,
+                                           .cloudMarchStrips = options.cloudMarchStrips});
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;
+    cloudCoverage = rig.cloudCoverage;
+    cloudMarch.bind(rig);
 
     GroundPlane(engine, scene);
     DinosaurEntity(engine, scene);
@@ -202,11 +227,18 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     // Registered last, once the scene is fully built: the engine may call this the moment the
     // first tick runs, and a half-constructed scene is not something it should be handed.
     engine.onUpdate([this](float delta) { update(delta); });
+    // `this->engine` because the constructor's own parameter shadows the member here, and the
+    // lambda outlives the parameter.
+    engine.onFrame([this] { cloudMarch.update(this->engine); });
 }
 
 void ApronScene::update(float delta)
 {
     freeCamera.update(camera, delta);
+
+    // The clouded sky's one scheduled probe re-photograph — on the tick count, and only when the
+    // rig settled a non-zero coverage.
+    cloudRecapture.update(engine, scene, cloudCoverage);
 
     // After the controller, so all three views record this tick's eye.
     syncLayeredCameras(camera, *carCamera, *frameCamera);

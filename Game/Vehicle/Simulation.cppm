@@ -13,6 +13,8 @@ module;
 
 #include <glm/glm.hpp>
 
+#include <Profiling/RaceEngineProfile.hpp>
+
 export module osr.game:Simulation;
 
 import :Options;
@@ -199,14 +201,25 @@ void Simulation::stop()
 
 void Simulation::step()
 {
+    RACEENGINE_ZONE_N("simulation tick");
+
     for (auto& car : cars)
     {
         car->tick(tickSeconds);
     }
+
+    // A frame of its own, on its own track. The render frame and this one are different clocks —
+    // that separation is the whole reason this thread exists — and one timeline holding both is what
+    // makes a tick that ran late visible as a gap rather than as a slow frame.
+    RACEENGINE_FRAME_N("simulation");
 }
 
 void Simulation::run(const std::stop_token& stopToken)
 {
+    // Named from the thread itself, which is the only place Tracy can be told: a profiler showing
+    // four numbered threads cannot say which one missed its cadence.
+    RACEENGINE_THREAD("simulation");
+
     if (driven)
     {
         handshaken(stopToken);

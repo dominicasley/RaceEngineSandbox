@@ -30,15 +30,21 @@ void main()
     // the quad it is drawn on and prints that quad's shadow onto whatever stands behind it.
     if (material.roughMetal.z > 0.0) {
         vec2 transformed = (mat3(material.textureTransform) * vec3(textureCoordinates, 1.0)).xy;
-        // Mip 0, and it is the difference between a fence and no fence. A chain-link texture's
-        // alpha averages toward its open fraction as the mips go down — under half for any mesh
-        // that is mostly hole — so a coverage test against the mip the sample density picks
-        // deletes the whole surface exactly where this pass samples coarsely. That is a fence
-        // whose shadow lands on the car (cascade 0, mip 0) and not on the road (cascades 1-3,
-        // mipped alpha under the cutoff): the least diagnosable half-presence a caster can have.
-        // The aliasing mip 0 buys is in a depth map a 3x3 PCF reads; it never reaches the eye.
+        // **The mipped sample, and it must be the shading pass's own** (2026-08-26, the pre-Z
+        // prerequisite). The depth this pass writes is the depth the world and car passes load and
+        // test against, so a texel this pass keeps and shading discards writes near depth over a
+        // surface shading can then never draw behind — a hole, which is the one failure pre-Z must
+        // not have. `texture()` here picks the mip `texture()` picks there: the same UVs, the same
+        // derivatives, the same sampler, at the same view resolution. The two tests agree by
+        // construction rather than by tuning.
+        //
+        // The mip-0 argument this line used to carry is still right where it was made, and it is
+        // made in DepthOnlyFragmentShader: a chain-link alpha averages toward its open fraction as
+        // the mips go down, so a cascade sampling a fence coarsely deletes it. **The cascades keep
+        // mip 0.** This pass does not sample coarsely, so it has nothing to defend against, and the
+        // thing it would break instead is the depth contract above.
         float coverage = material.baseColour.a
-            * ((material.useTextures.x != 0) ? textureLod(diffuseTexture, transformed, 0.0).a : 1.0);
+            * ((material.useTextures.x != 0) ? texture(diffuseTexture, transformed).a : 1.0);
 
         if (coverage < material.roughMetal.z) {
             discard;

@@ -130,7 +130,15 @@ void main()
 
         // The sheared plane the vertical-line model runs in; P.y stays true for the fall phase, so
         // a drop's height and its tilt agree by construction.
-        vec2 sheared = P.xz - P.y * shear;
+        //
+        // **Pivoted at the camera's own height, and that is a seat-found correction** ("the dirt
+        // texture moves when the car moves"): sheared by absolute world height, the lever arm was
+        // the circuit's ~350 units, so every change of speed — a change of shear — slid the whole
+        // drop field sideways by metres and the rain speckle crawled over the world under
+        // acceleration. A tilted line pivots about any point; pivoting where the eye is puts the
+        // displacement at zero exactly where the field is looked at, and the tilt fans out above
+        // and below.
+        vec2 sheared = P.xz - (P.y - cameraPosition.y) * shear;
 
         // Cells sized with the layer's depth, so every layer's columns stand a similar angle apart
         // on screen and no layer is either empty or a wall of water. The first cut used 0.20 and

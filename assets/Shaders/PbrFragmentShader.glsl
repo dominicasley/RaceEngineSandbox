@@ -279,8 +279,10 @@ float shadowFactor(vec3 worldPosition, vec3 worldNormal, vec3 lightDirection, fl
 // capture uploads no fog at all — VulkanRenderer's probe path says why — which is what stops the
 // second of those feeding itself.
 //
-// **This block is the same in PbrFragmentShader, BlinnPhongFragmentShader and SkyboxFragmentShader
-// and must not drift between them**: this engine compiles each shader from one source string and
+// **This block is the same in PbrFragmentShader, BlinnPhongFragmentShader and — since the fog
+// moved to the fullscreen pass for everything opaque (2026-08-25) — VolumetricFogFragmentShader,
+// which fogs what these shaders' blended draws are composited over. It must not drift between
+// them**: this engine compiles each shader from one source string and
 // has no include resolver to share code through, and two surfaces of one scene fogging by different
 // arithmetic would part company along the seam between them. `Graphics/Api/VolumetricFog.cppm` is
 // the same arithmetic once more in C++, where it is unit-tested without a device;
@@ -960,5 +962,13 @@ void main()
 
     vec3 colour = ads(albedo, specularMap, normalMap);
 
-    fragColor = vec4(applyFog(colour, positionInWorldSpace, albedo.a), albedo.a);
+    // Opaque fog belongs to the fullscreen fog pass now — the reason is at
+    // BlinnPhongFragmentShader's own gate: opaque surfaces are in the occlusion prepass the pass
+    // reads its depths from, blended ones are not, and probe captures upload no fog either way.
+    if (material.useTextures2.y == 0)
+    {
+        colour = applyFog(colour, positionInWorldSpace, albedo.a);
+    }
+
+    fragColor = vec4(colour, albedo.a);
 }

@@ -325,8 +325,10 @@ float shadowFactor(vec3 worldPosition, vec3 worldNormal, vec3 lightDirection, fl
 // capture uploads no fog at all — VulkanRenderer's probe path says why — which is what stops the
 // second of those feeding itself.
 //
-// **This block is the same in PbrFragmentShader, BlinnPhongFragmentShader and SkyboxFragmentShader
-// and must not drift between them**: this engine compiles each shader from one source string and
+// **This block is the same in PbrFragmentShader, BlinnPhongFragmentShader and — since the fog
+// moved to the fullscreen pass for everything opaque (2026-08-25) — VolumetricFogFragmentShader,
+// which fogs what these shaders' blended draws are composited over. It must not drift between
+// them**: this engine compiles each shader from one source string and
 // has no include resolver to share code through, and two surfaces of one scene fogging by different
 // arithmetic would part company along the seam between them. `Graphics/Api/VolumetricFog.cppm` is
 // the same arithmetic once more in C++, where it is unit-tested without a device;
@@ -942,5 +944,19 @@ void main()
     // match, which is the same contract PbrFragmentShader writes under.
     vec3 body = albedo.rgb * (ambientLight + diffuseLight);
 
-    fragColor = vec4(applyFog(body * albedo.a + specularLight, positionInWorldSpace, albedo.a), albedo.a);
+    vec3 shaded = body * albedo.a + specularLight;
+
+    // The medium moved to the fullscreen fog pass for everything opaque (2026-08-25): an opaque
+    // surface is in the occlusion prepass, so the pass places it exactly and integrates the air
+    // once per pixel instead of once per fragment with overdraw. A blended surface is not in that
+    // prepass — there is no single depth for a pane you can see through — so the blended draws
+    // keep the in-shader statement over their own exact positions, composited over a world the
+    // pass has already fogged behind them. Probe captures upload no fog at all, so this gate
+    // changes nothing a probe photographs.
+    if (material.useTextures2.y == 0)
+    {
+        shaded = applyFog(shaded, positionInWorldSpace, albedo.a);
+    }
+
+    fragColor = vec4(shaded, albedo.a);
 }

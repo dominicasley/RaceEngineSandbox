@@ -121,6 +121,15 @@ private:
     // one has switched on — and off is what keeps both gates byte-identical.
     WiperController wipers;
 
+    // The rig's effective cloud coverage and the one job it leaves the scene: the scheduled probe
+    // re-photograph, a function of the tick count that never fires on a clear sky.
+    float cloudCoverage = 0.0f;
+    CloudProbeRecapture cloudRecapture;
+    // And the per-frame one: how often the dome actually marches. On the frame callback rather
+    // than the tick, because a cadence in frames cannot be kept on a clock that runs at 120 Hz
+    // whatever the frame rate is.
+    CloudMarchSchedule cloudMarch;
+
 public:
     CircuitScene(raceengine::Engine& engine, const RunOptions& options);
     // The simulation's thread is stopped here, before a single member is destroyed. `~PlayerCar`
@@ -155,6 +164,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         engine,
         orThrow(raceengine::PhysicsWorld::create(orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))),
         std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
+
+    camera.debugName = "world";
 
     // Faster film, and it is not a look — it is what stops the meter running out of shutter.
     //
@@ -240,15 +251,30 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // needed the scene to know which view looked through glass; `WindshieldFragmentShader` does not,
     // because the glass is geometry the car carries and the grime is shaded on it. Every camera now
     // gets the same rig, which is one fewer thing for a view to have an opinion about.
+    // The rig speaks in float and the options in double, and the conversion has to keep "unset"
+    // unset: an absent blend weight is the dome's old transmittance-weighted accumulator, which is a
+    // different thing from any number.
+    const auto cloudBlend = options.cloudBlendWeight.has_value()
+                                ? std::optional<float>(static_cast<float>(options.cloudBlendWeight.value()))
+                                : std::optional<float>{};
+
     const auto rig = buildRenderRig(engine, scene, camera, 30000.0f,
                                     RigAir{.baseHeight = 350.0f,
                                            .densityScale = static_cast<float>(options.fogDensityScale),
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
-                                           .rain = static_cast<float>(options.rainIntensity)});
+                                           .rain = static_cast<float>(options.rainIntensity),
+                                           .clouds = static_cast<float>(options.cloudCoverage),
+                                           .cloudMapWidth = options.cloudMapWidth,
+                                           .cloudMapHeight = options.cloudMapHeight,
+                                           .cloudBlendWeight = cloudBlend,
+                                           .cloudMarchInterval = options.cloudMarchInterval,
+                                           .cloudMarchStrips = options.cloudMarchStrips});
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;
     composite = rig.composite;
+    cloudCoverage = rig.cloudCoverage;
+    cloudMarch.bind(rig);
     raining = options.rainIntensity > 0.0;
 
     // The car's own sound bank, from the folder the Assetto Corsa car shipped as. Not fatal: a car
@@ -364,6 +390,11 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // Registered last, once the scene is fully built: the engine may call this the moment the
     // first tick runs, and a half-constructed scene is not something it should be handed.
     engine.onUpdate([this](float delta) { update(delta); });
+    // Beside it, and on the frame rather than the tick: the dome's cadence is a statement about
+    // how often the frame re-marches it, and it is read while that frame is being recorded.
+    // `this->engine` because the constructor's own parameter shadows the member here, and the
+    // lambda outlives the parameter.
+    engine.onFrame([this] { cloudMarch.update(this->engine); });
 }
 
 CircuitScene::~CircuitScene()
@@ -479,11 +510,18 @@ void CircuitScene::update(float delta)
     orThrow(engine.scene().setWipers(scene, wipers.state()));
 
     // The rain's drift, integrated against the fixed step rather than `delta` so a captured run's
-    // frame N carries the same phase on every machine. Skipped dry so a dry run's frame block is
-    // byte-for-byte the one this engine uploaded before rain existed — and taken when the wipers
-    // are running whatever the weather, because the same heading is what tells the shader which
-    // pane is the windscreen.
-    if (raining || wipers.running())
+    // frame N carries the same phase on every machine.
+    //
+    // **Unconditional now, and that is a seat-found correction** (2026-08-25, "the dirt moves,
+    // mainly on roll" — dry, wipers off): this block used to be gated on `raining ||
+    // wipers.running()` to keep a dry frame block byte-identical, but the body axes it publishes
+    // are read in the dry frame too — the windscreen's grime stands in a pane basis built from
+    // them — and a dry run left the scene's *defaults* under the glass, which are the world's
+    // axes. The dirt then held the horizon while the car rolled beneath it, invisible on the
+    // straight launch the gate captures and obvious from the seat in a corner. The car points
+    // somewhere whatever the weather; the scene says so every tick, and the drift rides along
+    // because one code path is one determinism argument. The speed and phase stay unread by every
+    // dry shader, which is what the frame block's own comment promises.
     {
         // Ground speed, and specifically the horizontal part of it: this is the airstream the body
         // is driving into, so it is the chassis' velocity across the ground and never a wheel's —
@@ -556,7 +594,7 @@ void CircuitScene::update(float delta)
     }
     else if (cockpitCamera)
     {
-        cockpitCamera->update(camera, player->vehicle());
+        cockpitCamera->update(camera, player->vehicle(), delta);
     }
 
     // The cockpit's split meters, carried across every tick the seat view is live: the cabin's
@@ -566,6 +604,10 @@ void CircuitScene::update(float delta)
     {
         applySplitExposure(engine, camera, *carCamera, *frameCamera, composite);
     }
+
+    // The clouded sky's one scheduled probe re-photograph — on the tick count, and only when the
+    // rig settled a non-zero coverage.
+    cloudRecapture.update(engine, scene, cloudCoverage);
 
     // After whatever steered the pose camera, so all three views record this tick's eye.
     syncLayeredCameras(camera, *carCamera, *frameCamera);

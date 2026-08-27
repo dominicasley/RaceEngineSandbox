@@ -21,6 +21,7 @@ target_sources(OpenStreetRace PRIVATE
         Game/Entities/CarEntity.cppm
         Game/Entities/DinosaurEntity.cppm
         Game/Entities/GroundPlane.cppm
+        Game/CloudNoise.cppm
         Game/Game.cppm
         Game/Options.cppm
         Game/Scenes/ApronScene.cppm

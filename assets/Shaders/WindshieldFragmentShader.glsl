@@ -521,7 +521,7 @@ const float wiperFilmSeconds = 0.30;
 const float wiperFilmOpacity = 0.10;
 
 // What a pass leaves the grime at, and how long the road's spray takes to put it back.
-const float grimeWipedCoverage = 0.25;
+const float grimeWipedCoverage = 0.1;
 const float grimeRegrowSeconds = 20.0;
 
 // How long the glass stays swept behind the blade before water is back on it.
@@ -831,13 +831,19 @@ const float grimePeakCoverage = 0.34;
 // out before the transmitted term uses it, so darkening here leaves the blurring of the scene
 // behind the glass untouched and takes only the light the dirt adds of its own. That is the right
 // lever: a dirty screen is dirty because it *diffuses*, not because it glows.
-const vec3 grimeDarkTint = vec3(0.20, 0.18, 0.15);
-const vec3 grimeLightTint = vec3(0.46, 0.43, 0.38);
+const vec3 grimeDarkTint = vec3(0.0, 0.0, 0.0);
+const vec3 grimeLightTint = vec3(0.0, 0.0, 0.0);
 
-// How much of the dirt the water takes with it: along the channels the drops run in, and under
-// whatever water is standing on the glass right now.
+// How much of the dirt the water takes with it: along the channels the drops run in, and only
+// there. An `underWater` term stood beside this — grime erased under whatever water was standing
+// on the glass *right now*, at full strength — and it was exactly the fault the channel comment
+// below warns against: keyed to the instantaneous field, the dirt vanished under each travelling
+// drop and healed behind it, so from the seat the whole dirt pattern swam whenever the car moved
+// and the water streamed (Dominic's report, 2026-08-25 — visible only with the wipers off,
+// because a wiped screen has almost no grime left to swim). Removed rather than weakened: the
+// rain composites over the grime later in this shader, so a drop already covers the dirt it
+// stands on, and the channels are the durable statement of what the water has taken.
 const float grimeWashStreak = 0.85;
-const float grimeWashUnderWater = 1.0;
 
 // Value noise on the pane, in metres, through the same integer hash the rain uses — never a
 // driver's `sin()`, for the reason stated where the rain hash is.
@@ -932,15 +938,14 @@ float grimeWashChannel(float along)
 
 // How much of the dirt the rain has taken off this piece of glass. **Water washes a windscreen in
 // streaks and not evenly**, because it runs in channels and the glass between them stays dirty —
-// which is what a dirty screen in rain actually looks like, and what an even fade would lose.
-float grimeWash(vec2 dropUv, vec2 water, float acrossShare, float intensity)
+// which is what a dirty screen in rain actually looks like, and what an even fade would lose. The
+// channels are the whole of it now; the instantaneous under-the-water term is gone, and the note
+// above `grimeWashStreak` says what it cost.
+float grimeWash(vec2 dropUv, float acrossShare, float intensity)
 {
     float channel = mix(grimeWashChannel(dropUv.x), grimeWashChannel(dropUv.y), acrossShare);
 
-    // And whatever water is standing here right now, which is a drop picking the dirt up as it goes.
-    float underWater = clamp(water.x + water.y * 0.7, 0.0, 1.0);
-
-    return clamp(intensity, 0.0, 1.0) * max(channel * grimeWashStreak, underWater * grimeWashUnderWater);
+    return clamp(intensity, 0.0, 1.0) * channel * grimeWashStreak;
 }
 
 void main()
@@ -1180,7 +1185,7 @@ void main()
     // **And the water takes it with it.** Rain does not fade a dirty screen evenly; it cuts channels
     // down it and leaves the glass between them filthy, which is why this is keyed to the columns
     // the drops run in rather than to where a drop happens to be standing.
-    grime.a *= 1.0 - grimeWash(dropUv, water, acrossShare, min(frame.timeRain.y, 1.0));
+    grime.a *= 1.0 - grimeWash(dropUv, acrossShare, min(frame.timeRain.y, 1.0));
 
     vec3 rayDirection = normalize(positionInWorldSpace - frame.cameraPosition.xyz);
 
