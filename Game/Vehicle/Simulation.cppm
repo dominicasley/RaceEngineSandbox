@@ -6,6 +6,7 @@ module;
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 #include <utility>
@@ -86,7 +87,7 @@ public:
     // behind pointers precisely so that a second one cannot move the first out from under whoever
     // is watching it.
     SimulatedCar& add(const glm::dvec3& grid, double heading, DriverChoice driver, double beltBridgingLength,
-                      AssistSelection assists);
+                      std::optional<bool> loadPath, std::optional<bool> drivelineReaction, AssistSelection assists);
 
     // Once every body is placed. Nothing ticks until this is called, so a half-built world is never
     // stepped — the same rule a scene keeps when it registers its update callback last.
@@ -166,9 +167,11 @@ Simulation::~Simulation()
 }
 
 SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, const DriverChoice driver,
-                              const double beltBridgingLength, const AssistSelection assists)
+                              const double beltBridgingLength, const std::optional<bool> loadPath,
+                              const std::optional<bool> drivelineReaction, const AssistSelection assists)
 {
-    cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver, beltBridgingLength, assists));
+    cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver, beltBridgingLength, loadPath,
+                                                  drivelineReaction, assists));
 
     return *cars.back();
 }

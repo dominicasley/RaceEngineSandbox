@@ -123,6 +123,37 @@ export struct RunOptions
     // exactly like "the belt does nothing".
     double beltBridgingMillimetres = -1.0;
 
+    // Which load-path model the car runs, or unset for the car's own. `OSR_LOAD_PATH`, the word
+    // `geometric` or the word `springs`.
+    //
+    // A seat knob, here for `OSR_BELT_MM`'s reason and with the same standing: whether the body
+    // leans the right amount is a question only Dominic can answer, and it is answered by flipping
+    // between two laps rather than between two builds. `springs` is the control — every newton of
+    // load transfer through a spring, which is the model every measured figure in docs/ was taken
+    // under and the one that produced the seat report this exists to answer. `geometric` is the
+    // car's own setting since 2026-08-27: the tyre's in-plane forces reaching the corner's degree of
+    // freedom through the linkage, which is roll centre, jacking, anti-dive and anti-squat at once.
+    //
+    // Outside the cross-variable validation, again for that knob's reason — a load path has no
+    // partner among scene, camera and driver to contradict. `docs/suspension-load-path-brief.md`.
+    std::optional<bool> geometricLoadPath;
+
+    // Whether the wheels' own spin reacts on the rest of the car. `OSR_DRIVELINE_REACTION`, the word
+    // `on` or the word `off`, unset for the car's own setting — which is **on** for the Golf since
+    // 2026-08-27 late, and off on the placeholder.
+    //
+    // A seat knob for the same reason as the one above and with the same standing. What it adds is
+    // the couple a spinning-up or slowing-down wheel takes out of the body, plus the shaft torque's
+    // virtual work in the driven corner. It was built and shipped **off** so the verdict would be
+    // Dominic's; he drove it and kept it, and `off` is now the control and the way back.
+    //
+    // **It costs measured things, and the figure to quote is the anti-lock one.** The term is the
+    // wheel's own `I·alpha` and anti-lock cycling *is* wheel angular acceleration, so a clean
+    // full-pedal stop barely excites it: that fixture says +1.7%, and an ABS stop from 100 km/h says
+    // **+5.6%**, 42.18 → 44.54 m. `docs/suspension-fidelity-brief.md`, item 3, and
+    // `docs/known-red.md` for the five reds it opened.
+    std::optional<bool> drivelineReaction;
+
     // A session override of the setup sheet's assists. `OSR_ASSISTS`, a comma-separated list of
     // `abs`, `tc`, `tc-sport` and `xds`, or the single word `none`; **unset means the sheet decides**,
     // which is where they belong.
@@ -490,6 +521,52 @@ namespace
     return millimetres;
 }
 
+[[nodiscard]] std::optional<bool> geometricLoadPath()
+{
+    const auto value = setting("OSR_LOAD_PATH");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "geometric")
+    {
+        return true;
+    }
+
+    if (value == "springs")
+    {
+        return false;
+    }
+
+    // Two words and no third reading. A number would be the obvious alternative and is refused on
+    // purpose: this is not a dial, and "0.5 of a load path" is not a thing a linkage can do.
+    throw std::runtime_error("OSR_LOAD_PATH is 'geometric' or 'springs', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] std::optional<bool> drivelineReaction()
+{
+    const auto value = setting("OSR_DRIVELINE_REACTION");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_DRIVELINE_REACTION is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
 // A look multiplier: a number, or the word `off` for the control. It served two knobs until the lens
 // dirt plate was removed (2026-08-24) and is kept as a function rather than inlined into `OSR_FOG`
 // because the next one of these will want it and because `off` is worth stating once.
@@ -846,8 +923,7 @@ namespace
 
         if (found == count)
         {
-            throw std::runtime_error(std::string(name) + " takes " + form + ", and this states more: '" + value +
-                                     "'.");
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and this states more: '" + value + "'.");
         }
 
         auto consumed = std::size_t{0};
@@ -858,14 +934,14 @@ namespace
         }
         catch (const std::exception&)
         {
-            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word +
-                                     "' is not a number: '" + value + "'.");
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word + "' is not a number: '" +
+                                     value + "'.");
         }
 
         if (consumed != word.size())
         {
-            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word +
-                                     "' is not a number: '" + value + "'.");
+            throw std::runtime_error(std::string(name) + " takes " + form + ", and '" + word + "' is not a number: '" +
+                                     value + "'.");
         }
 
         ++found;
@@ -945,6 +1021,8 @@ RunOptions runOptions()
                       .driver = driver(chosen),
                       .rackTrace = rackTrace(chosen),
                       .beltBridgingMillimetres = beltBridgingMillimetres(),
+                      .geometricLoadPath = geometricLoadPath(),
+                      .drivelineReaction = drivelineReaction(),
                       .assists = chosenAssists,
                       .fogDensityScale = lookMultiplier("OSR_FOG"),
                       .rainIntensity = rainIntensity(),

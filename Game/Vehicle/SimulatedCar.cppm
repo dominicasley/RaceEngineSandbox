@@ -133,6 +133,16 @@ export class SimulatedCar
     // setup and would otherwise wipe it — see `stampBeltOverride`.
     double beltBridgingOverride = -1.0;
 
+    // This session's `OSR_LOAD_PATH`, or empty for the car's own setting. Held for the object's life
+    // and re-stamped after every setup sheet, for `beltBridgingOverride`'s reason exactly — a tune
+    // rebuilds the whole car, and an override applied once at construction is wiped by the first
+    // sheet that lands. That mistake has been made twice in this file and cost four laps the first
+    // time; see `stampBeltOverride`.
+    std::optional<bool> loadPathOverride;
+
+    // And this session's `OSR_DRIVELINE_REACTION`, held and re-stamped for the same reason again.
+    std::optional<bool> drivelineReactionOverride;
+
     // The car's electronics, and their state. **Off unless this run said otherwise** — see
     // `RunOptions::assists` for why the default is not the factory's. With nothing switched on
     // `updateAssists` still runs, still samples the tone rings and still reports its channels, and
@@ -236,7 +246,8 @@ public:
     // radians — a grid slot states one and an AI line does not, which is most of why the slot is the
     // spawn.
     SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
-                 double heading, DriverChoice driver, double beltBridgingLength, AssistSelection assists);
+                 double heading, DriverChoice driver, double beltBridgingLength, std::optional<bool> loadPath,
+                 std::optional<bool> drivelineReaction, AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -341,6 +352,12 @@ private:
     // constructor and from `takeTune`, which are the only two places a setup arrives.
     void stampBeltOverride();
 
+    // And this session's `OSR_LOAD_PATH`, onto the same two arrivals and for the same reason.
+    void stampLoadPathOverride();
+
+    // And this session's `OSR_DRIVELINE_REACTION`, likewise.
+    void stampDrivelineReactionOverride();
+
     [[nodiscard]] double groundSpeed() const
     {
         return glm::length(state.chassis.linearVelocity);
@@ -441,10 +458,13 @@ deriveSteeringAssist(const raceengine::VehicleSetup& setup, const double targetR
 
 SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
                            const double heading, const DriverChoice driver, const double beltBridgingLength,
+                           const std::optional<bool> loadPath, const std::optional<bool> drivelineReaction,
                            const AssistSelection chosenAssists) :
     engine(engine),
     world(world),
     beltBridgingOverride(beltBridgingLength),
+    loadPathOverride(loadPath),
+    drivelineReactionOverride(drivelineReaction),
     driveline(raceengine::golfGtiMk7Driveline()),
     steering(keyboardSteering()),
     driver(driver)
@@ -460,6 +480,8 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
 
     setup = std::move(built).value();
     stampBeltOverride();
+    stampLoadPathOverride();
+    stampDrivelineReactionOverride();
 
     // The electronics are calibrated against the car that was just built rather than against a
     // second copy of its numbers — brake peaks off the corners, the reference radius off the wheel.
@@ -606,6 +628,23 @@ void SimulatedCar::stampBeltOverride()
     setup.sampling.beltIterations = 32;
 }
 
+void SimulatedCar::stampLoadPathOverride()
+{
+    // Unset is "leave the car's own setting alone", which is the default and the shipped behaviour.
+    if (loadPathOverride.has_value())
+    {
+        setup.geometricLoadPath = loadPathOverride.value();
+    }
+}
+
+void SimulatedCar::stampDrivelineReactionOverride()
+{
+    if (drivelineReactionOverride.has_value())
+    {
+        setup.drivelineReaction = drivelineReactionOverride.value();
+    }
+}
+
 void SimulatedCar::applyTune(CarTune tune)
 {
     const auto guard = std::lock_guard<std::mutex>(tuneLock);
@@ -678,6 +717,8 @@ void SimulatedCar::takeTune()
     // arrived before the first tick, and every drive ran the shipped tyre while the startup log
     // cheerfully reported the setting it had been asked for.
     stampBeltOverride();
+    stampLoadPathOverride();
+    stampDrivelineReactionOverride();
     stampAssistOverride();
     reportAssists();
 

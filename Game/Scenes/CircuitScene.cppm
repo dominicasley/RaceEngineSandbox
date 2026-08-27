@@ -226,10 +226,10 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         // which four sessions have now theorised about without once getting it into a capture. The
         // `P` key prints the pose in exactly the form these take, so a driver hands over a line
         // rather than a description of a place.
-        const auto standMetres = options.cameraPose.positionStated
-                                     ? glm::dvec3(options.cameraPose.xMetres, options.cameraPose.yMetres,
-                                                  options.cameraPose.zMetres)
-                                     : glm::dvec3(-660.0, 195.8, 1216.0);
+        const auto standMetres =
+            options.cameraPose.positionStated
+                ? glm::dvec3(options.cameraPose.xMetres, options.cameraPose.yMetres, options.cameraPose.zMetres)
+                : glm::dvec3(-660.0, 195.8, 1216.0);
         const auto stand = toWorldUnits(standMetres);
         engine.camera().setPosition(camera, static_cast<float>(stand.x), static_cast<float>(stand.y),
                                     static_cast<float>(stand.z));
@@ -352,8 +352,9 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = gridSlots.front();
-    simulatedCar = &simulation->add(slot.position, glm::radians(slot.yaw), options.driver,
-                                    0.001 * options.beltBridgingMillimetres, options.assists);
+    simulatedCar =
+        &simulation->add(slot.position, glm::radians(slot.yaw), options.driver, 0.001 * options.beltBridgingMillimetres,
+                         options.geometricLoadPath, options.drivelineReaction, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.
