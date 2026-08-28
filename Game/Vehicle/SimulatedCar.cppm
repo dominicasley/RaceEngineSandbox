@@ -164,6 +164,10 @@ export class SimulatedCar
     // measured on. `docs/tyre-state-brief.md`.
     std::optional<double> tyreIdealOverride;
 
+    // And this session's `OSR_TYRE_PRESSURE`, likewise. A flag on the setup rather than on the tyres,
+    // because it switches a whole model the way `tyreThermal` does.
+    std::optional<bool> tyrePressureOverride;
+
     // Where this session's tyres start, degrees Celsius, or empty for the model's own seed. Applied
     // once at construction and never re-stamped, unlike the three overrides above: a setup sheet
     // rebuilds the *car* and this is a property of the tyres' *state*, which a tune has no business
@@ -281,8 +285,9 @@ public:
                  double heading, DriverChoice driver, double beltBridgingLength, std::optional<bool> loadPath,
                  std::optional<bool> drivelineReaction, std::optional<bool> tyreThermal,
                  std::optional<double> tyreContactConductance, std::optional<double> tyreIdealTemperature,
-                 std::optional<bool> brakeThermal, std::optional<double> tyreTemperature,
-                 const raceengine::AmbientConditions& ambient, AssistSelection assists);
+                 std::optional<bool> tyrePressure, std::optional<bool> brakeThermal,
+                 std::optional<double> tyreTemperature, const raceengine::AmbientConditions& ambient,
+                 AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -405,6 +410,9 @@ private:
     // And this session's `OSR_TYRE_IDEAL`, likewise — onto all four grip curves.
     void stampTyreIdealOverride();
 
+    // And this session's `OSR_TYRE_PRESSURE`, likewise.
+    void stampTyrePressureOverride();
+
     [[nodiscard]] double groundSpeed() const
     {
         return glm::length(state.chassis.linearVelocity);
@@ -508,7 +516,8 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
                            const std::optional<bool> loadPath, const std::optional<bool> drivelineReaction,
                            const std::optional<bool> tyreThermal,
                            const std::optional<double> tyreContactConductance,
-                           const std::optional<double> tyreIdealTemperature, const std::optional<bool> brakeThermal,
+                           const std::optional<double> tyreIdealTemperature,
+                           const std::optional<bool> tyrePressure, const std::optional<bool> brakeThermal,
                            const std::optional<double> startingTemperature,
                            const raceengine::AmbientConditions& conditions, const AssistSelection chosenAssists) :
     engine(engine),
@@ -520,6 +529,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     brakeThermalOverride(brakeThermal),
     tyreContactOverride(tyreContactConductance),
     tyreIdealOverride(tyreIdealTemperature),
+    tyrePressureOverride(tyrePressure),
     tyreTemperature(startingTemperature),
     ambient(conditions),
     driveline(raceengine::golfGtiMk7Driveline()),
@@ -543,6 +553,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     stampBrakeThermalOverride();
     stampTyreContactOverride();
     stampTyreIdealOverride();
+    stampTyrePressureOverride();
 
     // The electronics are calibrated against the car that was just built rather than against a
     // second copy of its numbers — brake peaks off the corners, the reference radius off the wheel.
@@ -758,6 +769,14 @@ void SimulatedCar::stampTyreContactOverride()
     }
 }
 
+void SimulatedCar::stampTyrePressureOverride()
+{
+    if (tyrePressureOverride.has_value())
+    {
+        setup.tyrePressure = tyrePressureOverride.value();
+    }
+}
+
 void SimulatedCar::stampTyreIdealOverride()
 {
     if (!tyreIdealOverride.has_value())
@@ -870,6 +889,7 @@ void SimulatedCar::takeTune()
     stampBrakeThermalOverride();
     stampTyreContactOverride();
     stampTyreIdealOverride();
+    stampTyrePressureOverride();
     stampAssistOverride();
     reportAssists();
 
@@ -1233,7 +1253,9 @@ namespace
                                                      .brakePressure = channels.pressure[index],
                                                      .treadCoreTemperature = wheel.tyreCoreTemperature,
                                                      .discTemperature = wheel.discTemperature,
-                                                     .wheelTemperature = wheel.wheelTemperature};
+                                                     .wheelTemperature = wheel.wheelTemperature,
+                                                     .gasTemperature = wheel.tyreGasTemperature,
+                                                     .tyrePressurePsi = wheel.tyrePressurePsi};
     }
 
     return trace;

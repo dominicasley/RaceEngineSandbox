@@ -376,8 +376,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     simulatedCar =
         &simulation->add(slot.position, glm::radians(slot.yaw), options.driver, 0.001 * options.beltBridgingMillimetres,
                          options.geometricLoadPath, options.drivelineReaction, options.tyreThermal,
-                         options.tyreContactConductance, options.tyreIdealTemperature, options.brakeThermal,
-                         startingTyreTemperature, ambient, options.assists);
+                         options.tyreContactConductance, options.tyreIdealTemperature, options.tyrePressure,
+                         options.brakeThermal, startingTyreTemperature, ambient, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.

@@ -91,7 +91,7 @@ public:
     PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& node, RenderableModel& carRenderable,
               std::string rackTracePath = {});
 
-    // An attended session leaves its steering evidence behind without being asked: the last five
+    // An attended session leaves its steering evidence behind without being asked: the last **ten**
     // minutes of the rack trace and the force feedback service's own summary, written beside the
     // binary on the way out. A wheel complaint is settled by reading these off disk after the
     // drive, rather than by the driver describing a vibration in words — nothing is written on an

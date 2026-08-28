@@ -195,6 +195,16 @@ export struct RunOptions
     // what any figure older than the switch has to be read against. docs/tyre-state-brief.md.
     std::optional<bool> tyreThermal;
 
+    // Whether the air inside the tyres carries a temperature and a pressure. `OSR_TYRE_PRESSURE`,
+    // the word `on` or the word `off`, unset for the car's own setting — which is **off** while the
+    // grip half of it is unsourced.
+    //
+    // What it adds is the gas law and two couplings that follow from it: a cold tyre is a softer
+    // spring and a draggier one. **Off is every performance figure this project has**, because a car
+    // with it off is permanently at the ideal pressure its own vertical rate and rolling resistance
+    // are quoted at. `docs/tyre-state-brief.md`, section 7.
+    std::optional<bool> tyrePressure;
+
     // The thermal contact conductance of the tread-road interface, W/(m²·K). `OSR_TYRE_CONTACT`: a
     // number, or the word `perfect`; unset leaves the car's own figure alone.
     //
@@ -716,6 +726,31 @@ namespace
     }
 
     throw std::runtime_error("OSR_TYRE_THERMAL is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+// The same shape as `OSR_TYRE_THERMAL`, and separate from it because the two models switch
+// independently — pressure with the tread's model off is a gas that never warms, which is a
+// legitimate control and a dull car.
+[[nodiscard]] std::optional<bool> tyrePressure()
+{
+    const auto value = setting("OSR_TYRE_PRESSURE");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_TYRE_PRESSURE is 'on' or 'off', not '" + value +
                              "'. Unset leaves the car's own setting alone.");
 }
 
@@ -1326,6 +1361,7 @@ RunOptions runOptions()
                       .drivelineReaction = drivelineReaction(),
                       .tyreTemperature = tyreTemperature(),
                       .tyreThermal = tyreThermal(),
+                      .tyrePressure = tyrePressure(),
                       .tyreContactConductance = tyreContactConductance(),
                       .tyreIdealTemperature = tyreIdealTemperature(),
                       .brakeThermal = brakeThermal(),

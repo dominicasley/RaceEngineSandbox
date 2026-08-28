@@ -89,7 +89,8 @@ public:
     SimulatedCar& add(const glm::dvec3& grid, double heading, DriverChoice driver, double beltBridgingLength,
                       std::optional<bool> loadPath, std::optional<bool> drivelineReaction,
                       std::optional<bool> tyreThermal, std::optional<double> tyreContactConductance,
-                      std::optional<double> tyreIdealTemperature, std::optional<bool> brakeThermal,
+                      std::optional<double> tyreIdealTemperature, std::optional<bool> tyrePressure,
+                      std::optional<bool> brakeThermal,
                       std::optional<double> tyreTemperature, const raceengine::AmbientConditions& ambient,
                       AssistSelection assists);
 
@@ -174,14 +175,15 @@ SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, cons
                               const double beltBridgingLength, const std::optional<bool> loadPath,
                               const std::optional<bool> drivelineReaction, const std::optional<bool> tyreThermal,
                               const std::optional<double> tyreContactConductance,
-                              const std::optional<double> tyreIdealTemperature, const std::optional<bool> brakeThermal,
+                              const std::optional<double> tyreIdealTemperature,
+                              const std::optional<bool> tyrePressure, const std::optional<bool> brakeThermal,
                               const std::optional<double> tyreTemperature,
                               const raceengine::AmbientConditions& ambient, const AssistSelection assists)
 {
     cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver, beltBridgingLength, loadPath,
                                                   drivelineReaction, tyreThermal, tyreContactConductance,
-                                                  tyreIdealTemperature, brakeThermal, tyreTemperature, ambient,
-                                                  assists));
+                                                  tyreIdealTemperature, tyrePressure, brakeThermal, tyreTemperature,
+                                                  ambient, assists));
 
     return *cars.back();
 }
