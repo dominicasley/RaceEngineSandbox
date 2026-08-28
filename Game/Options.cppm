@@ -208,11 +208,11 @@ export struct RunOptions
     // The thermal contact conductance of the tread-road interface, W/(m²·K). `OSR_TYRE_CONTACT`: a
     // number, or the word `perfect`; unset leaves the car's own figure alone.
     //
-    // **The shipped car states none, which is perfect contact and is what the model did before this
-    // existed.** The sourced figure for rubber on asphalt is **25200** (NASA TN D-8161, 1976, and a
-    // lower limit), which is what the A/B is for — it is worth about a fifth of the road path and one
-    // to two degrees on the tread core, both far below anything a seat can resolve, which is why it
-    // is a knob and not yet a default. `docs/tyre-state-brief.md`.
+    // **The shipped car states the sourced figure, 25200, since 2026-08-29** (NASA TN D-8161, 1976,
+    // rubber on asphalt, a lower limit) — worth about a fifth of the road path and one to two degrees
+    // on the tread core, both far below anything a seat can resolve, and no golden moved for it.
+    // `OSR_TYRE_CONTACT=perfect` is the control and the way back to the pre-2026-08-29 road path.
+    // `docs/tyre-state-brief.md`.
     std::optional<double> tyreContactConductance;
 
     // What fraction of the geometric contact patch conducts into the road. `OSR_TYRE_ROAD_AREA`: a

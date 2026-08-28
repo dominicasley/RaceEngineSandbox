@@ -772,7 +772,8 @@ void SimulatedCar::stampTyreContactOverride()
     }
 
     // Every corner, because each carries its own copy of the tyre. Zero is the word `perfect` and is
-    // the model with no interface resistance at all, which is what the shipped car states.
+    // the model with no interface resistance at all — the control since 2026-08-29, when the Golf
+    // began stating the measured 25200.
     for (auto& corner : setup.corners)
     {
         corner.tyre.thermal.roadContactConductance = tyreContactOverride.value();
