@@ -352,9 +352,32 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = gridSlots.front();
+
+    // The weather, from the one number this run states and the sun the scene is already lit by —
+    // which is the sun's own pattern: state the hour, derive the sky, the probes, the fog and now
+    // the road's temperature from it. `OSR_TYRE_TEMP=ambient` is resolved against it here, because
+    // `Options.cppm` imports nothing and so cannot ask the physics what a road in this sun is at.
+    const auto ambient = raceengine::ambientAt(options.airTemperatureCelsius, options.sunElevationDegrees);
+    const auto startingTyreTemperature = [&]() -> std::optional<double>
+    {
+        switch (options.tyreTemperature.source)
+        {
+        case TyreTemperatureSource::Track:
+            return ambient.trackTemperature;
+        case TyreTemperatureSource::Stated:
+            return options.tyreTemperature.celsius;
+        case TyreTemperatureSource::CarsOwn:
+            break;
+        }
+
+        return std::nullopt;
+    }();
+
     simulatedCar =
         &simulation->add(slot.position, glm::radians(slot.yaw), options.driver, 0.001 * options.beltBridgingMillimetres,
-                         options.geometricLoadPath, options.drivelineReaction, options.assists);
+                         options.geometricLoadPath, options.drivelineReaction, options.tyreThermal,
+                         options.tyreContactConductance, options.tyreIdealTemperature, options.brakeThermal,
+                         startingTyreTemperature, ambient, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and on an open circuit it is one node rather than three.

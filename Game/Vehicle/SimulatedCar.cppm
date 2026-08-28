@@ -143,6 +143,38 @@ export class SimulatedCar
     // And this session's `OSR_DRIVELINE_REACTION`, held and re-stamped for the same reason again.
     std::optional<bool> drivelineReactionOverride;
 
+    // And this session's `OSR_TYRE_THERMAL`, likewise.
+    std::optional<bool> tyreThermalOverride;
+
+    // And this session's `OSR_BRAKE_THERMAL`, likewise.
+    std::optional<bool> brakeThermalOverride;
+
+    // And this session's `OSR_TYRE_CONTACT`, W/(m²·K), likewise — except that it is stamped onto every
+    // corner's tyre rather than onto one flag on the setup, because the tread-road interface is a
+    // property of the rubber and the road and each corner carries its own copy of both.
+    std::optional<double> tyreContactOverride;
+
+    // And this session's `OSR_TYRE_IDEAL`, degrees Celsius — where the compound's grip plateau is
+    // centred. Stamped onto every corner's grip curve for `tyreContactOverride`'s reason, and held
+    // and re-stamped for the reason all six of these are.
+    //
+    // **This one is a statement about which tyre the car wears rather than about a physical constant.**
+    // The shipped window is a road compound's since 2026-08-28, slid 20 °C down from the track one AC
+    // supplied; `OSR_TYRE_IDEAL=85` is the way back and is what every figure older than that date was
+    // measured on. `docs/tyre-state-brief.md`.
+    std::optional<double> tyreIdealOverride;
+
+    // Where this session's tyres start, degrees Celsius, or empty for the model's own seed. Applied
+    // once at construction and never re-stamped, unlike the three overrides above: a setup sheet
+    // rebuilds the *car* and this is a property of the tyres' *state*, which a tune has no business
+    // resetting. A driver who changes a spring rate mid-session does not get cold tyres for it.
+    std::optional<double> tyreTemperature;
+
+    // The weather this session is being driven in. Not an override and not re-stamped, because it is
+    // not a property of the car at all: it is handed to `stepVehicle` beside the world every tick,
+    // which is where a scene property belongs. Derived once from `OSR_AIR_TEMP` and the sun.
+    raceengine::AmbientConditions ambient{};
+
     // The car's electronics, and their state. **Off unless this run said otherwise** — see
     // `RunOptions::assists` for why the default is not the factory's. With nothing switched on
     // `updateAssists` still runs, still samples the tone rings and still reports its channels, and
@@ -247,7 +279,10 @@ public:
     // spawn.
     SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
                  double heading, DriverChoice driver, double beltBridgingLength, std::optional<bool> loadPath,
-                 std::optional<bool> drivelineReaction, AssistSelection assists);
+                 std::optional<bool> drivelineReaction, std::optional<bool> tyreThermal,
+                 std::optional<double> tyreContactConductance, std::optional<double> tyreIdealTemperature,
+                 std::optional<bool> brakeThermal, std::optional<double> tyreTemperature,
+                 const raceengine::AmbientConditions& ambient, AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -358,6 +393,18 @@ private:
     // And this session's `OSR_DRIVELINE_REACTION`, likewise.
     void stampDrivelineReactionOverride();
 
+    // And this session's `OSR_TYRE_THERMAL`, likewise.
+    void stampTyreThermalOverride();
+
+    // And this session's `OSR_BRAKE_THERMAL`, likewise.
+    void stampBrakeThermalOverride();
+
+    // And this session's `OSR_TYRE_CONTACT`, likewise — onto all four tyres.
+    void stampTyreContactOverride();
+
+    // And this session's `OSR_TYRE_IDEAL`, likewise — onto all four grip curves.
+    void stampTyreIdealOverride();
+
     [[nodiscard]] double groundSpeed() const
     {
         return glm::length(state.chassis.linearVelocity);
@@ -459,12 +506,22 @@ deriveSteeringAssist(const raceengine::VehicleSetup& setup, const double targetR
 SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
                            const double heading, const DriverChoice driver, const double beltBridgingLength,
                            const std::optional<bool> loadPath, const std::optional<bool> drivelineReaction,
-                           const AssistSelection chosenAssists) :
+                           const std::optional<bool> tyreThermal,
+                           const std::optional<double> tyreContactConductance,
+                           const std::optional<double> tyreIdealTemperature, const std::optional<bool> brakeThermal,
+                           const std::optional<double> startingTemperature,
+                           const raceengine::AmbientConditions& conditions, const AssistSelection chosenAssists) :
     engine(engine),
     world(world),
     beltBridgingOverride(beltBridgingLength),
     loadPathOverride(loadPath),
     drivelineReactionOverride(drivelineReaction),
+    tyreThermalOverride(tyreThermal),
+    brakeThermalOverride(brakeThermal),
+    tyreContactOverride(tyreContactConductance),
+    tyreIdealOverride(tyreIdealTemperature),
+    tyreTemperature(startingTemperature),
+    ambient(conditions),
     driveline(raceengine::golfGtiMk7Driveline()),
     steering(keyboardSteering()),
     driver(driver)
@@ -482,6 +539,10 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     stampBeltOverride();
     stampLoadPathOverride();
     stampDrivelineReactionOverride();
+    stampTyreThermalOverride();
+    stampBrakeThermalOverride();
+    stampTyreContactOverride();
+    stampTyreIdealOverride();
 
     // The electronics are calibrated against the car that was just built rather than against a
     // second copy of its numbers — brake peaks off the corners, the reference radius off the wheel.
@@ -549,6 +610,27 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     // body's origin, and `position` is where its centre of mass has to be for that to be true.
     state.chassis.position = grid + attitude * centreOfMass;
     lastRoadTorques = {};
+
+    // And this session's starting tread temperature, after the state has been rebuilt and before a
+    // tick has run.
+    //
+    // **Unset is the TRACK's temperature since 2026-08-28, and that changed with the switch.** While
+    // the thermal model shipped off, the default had to be the middle of the compound's plateau: that
+    // is the one seed under which turning it on changes nothing, and it is what both parity gates'
+    // inertness proof stood on. With the model on for good that argument is spent, and what is left
+    // is the physical one — **a car in a garage has cold tyres**, sitting at whatever the tarmac it is
+    // parked on is at. It is also the car Dominic drove and accepted, which was
+    // `OSR_TYRE_TEMP=ambient` throughout.
+    //
+    // The track rather than the air, because that is what the rubber is touching. `OSR_TYRE_TEMP=85`
+    // is the way back to the old default and `OSR_TYRE_TEMP=<n>` is any other starting point.
+    raceengine::seedTyreTemperatures(state, tyreTemperature.value_or(ambient.trackTemperature));
+
+    // The discs start at the air's temperature whatever this run said about the tyres. A car in a
+    // garage has cold brakes and there is no case for starting them anywhere else — which is why
+    // this is not a knob. **The tyres joined them in that reasoning on 2026-08-28**; they differ only
+    // in what they are resting against.
+    raceengine::seedDiscTemperatures(state, ambient.airTemperature);
 
     // A default-constructed driveline is a car with the key out. Turning it is a command and not an
     // input, which is why it is a call here rather than a field the tick reads.
@@ -645,6 +727,71 @@ void SimulatedCar::stampDrivelineReactionOverride()
     }
 }
 
+void SimulatedCar::stampTyreThermalOverride()
+{
+    if (tyreThermalOverride.has_value())
+    {
+        setup.tyreThermal = tyreThermalOverride.value();
+    }
+}
+
+void SimulatedCar::stampBrakeThermalOverride()
+{
+    if (brakeThermalOverride.has_value())
+    {
+        setup.brakeThermal = brakeThermalOverride.value();
+    }
+}
+
+void SimulatedCar::stampTyreContactOverride()
+{
+    if (!tyreContactOverride.has_value())
+    {
+        return;
+    }
+
+    // Every corner, because each carries its own copy of the tyre. Zero is the word `perfect` and is
+    // the model with no interface resistance at all, which is what the shipped car states.
+    for (auto& corner : setup.corners)
+    {
+        corner.tyre.thermal.roadContactConductance = tyreContactOverride.value();
+    }
+}
+
+void SimulatedCar::stampTyreIdealOverride()
+{
+    if (!tyreIdealOverride.has_value())
+    {
+        return;
+    }
+
+    // The curve is *slid*, not re-authored: every knot moves by the same number of degrees and the
+    // multipliers are untouched, so what changes is where the compound's window sits and nothing at
+    // all about its shape. That is the whole claim the sources support — a road compound's peak is
+    // lower than a track compound's — and it is deliberately not a licence to redraw the tails, which
+    // are nobody's measurement in either position.
+    //
+    // Stamped against the car's own `idealTemperature`, which is the plateau's centre and is what the
+    // shift is measured from. A curve with no points is left alone, since sliding an empty curve
+    // states a window a car has not got.
+    for (auto& corner : setup.corners)
+    {
+        auto& thermal = corner.tyre.thermal;
+        if (thermal.grip.count == 0)
+        {
+            continue;
+        }
+
+        const auto shift = tyreIdealOverride.value() - thermal.idealTemperature;
+        for (auto point = std::size_t{0}; point < thermal.grip.count; ++point)
+        {
+            thermal.grip.celsius.at(point) += shift;
+        }
+
+        thermal.idealTemperature = tyreIdealOverride.value();
+    }
+}
+
 void SimulatedCar::applyTune(CarTune tune)
 {
     const auto guard = std::lock_guard<std::mutex>(tuneLock);
@@ -719,6 +866,10 @@ void SimulatedCar::takeTune()
     stampBeltOverride();
     stampLoadPathOverride();
     stampDrivelineReactionOverride();
+    stampTyreThermalOverride();
+    stampBrakeThermalOverride();
+    stampTyreContactOverride();
+    stampTyreIdealOverride();
     stampAssistOverride();
     reportAssists();
 
@@ -881,7 +1032,7 @@ void SimulatedCar::tick(const double deltaTime)
     }
 
     const auto stepped =
-        raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime, assistCommand.brakes);
+        raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime, assistCommand.brakes, ambient);
     if (!stepped)
     {
         // Nothing here is a runtime condition: the setup was swept across its own travel at load
@@ -1079,7 +1230,10 @@ namespace
                                                      .patchDepthSpread = wheel.patchDepthSpread,
                                                      .antilockActive = channels.antilockActive[index],
                                                      .antilockCycles = channels.antilockCycles[index],
-                                                     .brakePressure = channels.pressure[index]};
+                                                     .brakePressure = channels.pressure[index],
+                                                     .treadCoreTemperature = wheel.tyreCoreTemperature,
+                                                     .discTemperature = wheel.discTemperature,
+                                                     .wheelTemperature = wheel.wheelTemperature};
     }
 
     return trace;

@@ -72,6 +72,22 @@ export struct AssistSelection
 // The two halves are stated separately because they are wanted separately: re-aiming from the
 // scene's own stand is a common thing to want, and so is standing somewhere else and keeping the
 // heading. Whichever is unstated stays the scene's.
+// Where a session's tyres start. Three answers and no fourth: the car's own seed, the track's
+// temperature, or a number this run states.
+//
+// `Track` cannot be resolved here, and that is deliberate rather than awkward. This file imports
+// nothing — it is one of the two translation units in the workspace that pay none of the module
+// cost, which is why it is the one place the environment is read — so it cannot call the physics
+// that derives a track temperature from an air temperature and a sun. It names the intent and the
+// scene resolves it.
+export enum class TyreTemperatureSource { CarsOwn, Track, Stated };
+
+export struct TyreTemperatureChoice
+{
+    TyreTemperatureSource source = TyreTemperatureSource::CarsOwn;
+    double celsius = 0.0;
+};
+
 export struct CameraPose
 {
     // Metres of track coordinates, which is what the scene states its own stand in and what the
@@ -153,6 +169,79 @@ export struct RunOptions
     // **+5.6%**, 42.18 → 44.54 m. `docs/suspension-fidelity-brief.md`, item 3, and
     // `docs/known-red.md` for the five reds it opened.
     std::optional<bool> drivelineReaction;
+
+    // Where a session's tyres start, in degrees Celsius. `OSR_TYRE_TEMP`: a number, or the word
+    // `ambient` for the track's own temperature.
+    //
+    // **Unset is now `ambient` too, and that changed on 2026-08-28 when the thermal model went on for
+    // good.** While it shipped off the default had to be the middle of the compound's plateau, which
+    // is the one seed under which switching the model on changes nothing and is what both parity
+    // gates' inertness proof stood on. With the model on that argument is spent and the physical one
+    // is what is left: a car in a garage has cold tyres. `OSR_TYRE_TEMP=85` is the way back to the
+    // old default.
+    //
+    // **`ambient` is the TRACK's temperature and not the air's**, because that is what the rubber is
+    // resting on — 11.5 °C apart under this scene's own sun. The name is the one the knob shipped
+    // with and it is kept rather than corrected, because a seat report that says "ambient" means this.
+    TyreTemperatureChoice tyreTemperature{};
+
+    // Whether the tyres carry a temperature. `OSR_TYRE_THERMAL`, the word `on` or the word `off`,
+    // unset for the car's own setting — which is **on for the Golf since 2026-08-28**, on Dominic's
+    // instruction and after he drove it.
+    //
+    // What it adds is the tread's own heat balance and grip following the tread core through the
+    // compound's curve. **`off` is the tyre every performance figure in docs/ was taken on before
+    // that date**: one that is permanently at its best. It is the control and the way back, and it is
+    // what any figure older than the switch has to be read against. docs/tyre-state-brief.md.
+    std::optional<bool> tyreThermal;
+
+    // The thermal contact conductance of the tread-road interface, W/(m²·K). `OSR_TYRE_CONTACT`: a
+    // number, or the word `perfect`; unset leaves the car's own figure alone.
+    //
+    // **The shipped car states none, which is perfect contact and is what the model did before this
+    // existed.** The sourced figure for rubber on asphalt is **25200** (NASA TN D-8161, 1976, and a
+    // lower limit), which is what the A/B is for — it is worth about a fifth of the road path and one
+    // to two degrees on the tread core, both far below anything a seat can resolve, which is why it
+    // is a knob and not yet a default. `docs/tyre-state-brief.md`.
+    std::optional<double> tyreContactConductance;
+
+    // Where this compound's grip plateau is centred, degrees Celsius. `OSR_TYRE_IDEAL`: a number;
+    // unset leaves the car's own window alone, which is **65 °C for the Golf since 2026-08-28**.
+    //
+    // **It slides the whole curve along its temperature axis and changes nothing about its shape.**
+    // AC's `tcurve_semis.lut` came with its plateau at 75–95 °C, corroborated by a Michelin bulletin
+    // for the Pilot Sport Cup 2 R — a **track** tyre — while this car's tread depth and mass are a
+    // road tyre's. Two published sources put a **summer road** tyre's design operating temperature at
+    // around **50 °C**, so the curve was slid down by the smaller of the two bounds those sources give.
+    //
+    // **`OSR_TYRE_IDEAL=85` is the way back to the track window**, and it is what every performance
+    // figure older than 2026-08-28 was measured on. 45 is the far end of the sourced band, where a
+    // lap's warm-up is worth half a per cent and the tyre is effectively always ready.
+    // `docs/tyre-state-brief.md`.
+    std::optional<double> tyreIdealTemperature;
+
+    // Whether the brake discs carry a temperature and the pads fade with it. `OSR_BRAKE_THERMAL`,
+    // the word `on` or the word `off`, unset for the car's own setting — **on for the Golf since
+    // 2026-08-28**, switched on in the same instruction as the tyre's.
+    //
+    // Independent of it on purpose, and it stays independent now that both default on: `off` here is
+    // fade taken away from a car whose tyres still carry heat, which is the control for the fade half
+    // alone. It also carries stage 3, the path from the disc into the wheel and the tyre.
+    // `docs/brake-thermal-brief.md`.
+    std::optional<bool> brakeThermal;
+
+    // The air temperature, degrees Celsius. `OSR_AIR_TEMP`; unset is 20.
+    //
+    // **A scene property and one number, on the sun's own pattern**: the track temperature is derived
+    // from this and from the sun's elevation rather than being a second knob, because a road in the
+    // sun is warmer than the air over it by an amount the sun's angle decides and not by an amount
+    // somebody types. Nothing in the physics knew the weather at all until 2026-08-28 and one thing
+    // reads it now — the tread's heat balance — so it does nothing whatever with `OSR_TYRE_THERMAL`
+    // off.
+    //
+    // Outside the cross-variable validation, like the look knobs: the weather has no partner among
+    // scene, camera and driver to contradict.
+    double airTemperatureCelsius = 20.0;
 
     // A session override of the setup sheet's assists. `OSR_ASSISTS`, a comma-separated list of
     // `abs`, `tc`, `tc-sport` and `xds`, or the single word `none`; **unset means the sheet decides**,
@@ -565,6 +654,218 @@ namespace
 
     throw std::runtime_error("OSR_DRIVELINE_REACTION is 'on' or 'off', not '" + value +
                              "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] TyreTemperatureChoice tyreTemperature()
+{
+    const auto value = setting("OSR_TYRE_TEMP");
+    if (value.empty())
+    {
+        return TyreTemperatureChoice{};
+    }
+
+    if (value == "ambient")
+    {
+        return TyreTemperatureChoice{.source = TyreTemperatureSource::Track};
+    }
+
+    auto consumed = std::size_t{0};
+    auto degrees = 0.0;
+
+    try
+    {
+        degrees = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_TYRE_TEMP is a temperature in Celsius or the word 'ambient', not '" + value +
+                                 "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_TYRE_TEMP is a temperature in Celsius or the word 'ambient', not '" + value +
+                                 "'.");
+    }
+
+    if (degrees < -30.0 || degrees > 250.0)
+    {
+        throw std::runtime_error("OSR_TYRE_TEMP is a tread temperature in Celsius and lies between -30 and 250: '" +
+                                 value + "'.");
+    }
+
+    return TyreTemperatureChoice{.source = TyreTemperatureSource::Stated, .celsius = degrees};
+}
+
+[[nodiscard]] std::optional<bool> tyreThermal()
+{
+    const auto value = setting("OSR_TYRE_THERMAL");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_TYRE_THERMAL is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+// W/(m²·K), or the word `perfect`, which is zero and is the model with no interface resistance at
+// all. Parsed on `OSR_TYRE_TEMP`'s terms — a number or one word — because it is the same shape of
+// question: a physical quantity with one named special case.
+[[nodiscard]] std::optional<double> tyreContactConductance()
+{
+    const auto value = setting("OSR_TYRE_CONTACT");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "perfect")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto conductance = 0.0;
+
+    try
+    {
+        conductance = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_TYRE_CONTACT is a conductance in W/(m2.K) or the word 'perfect', not '" + value +
+                                 "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_TYRE_CONTACT is a conductance in W/(m2.K) or the word 'perfect', not '" + value +
+                                 "'.");
+    }
+
+    // Negative is not a conductance, and zero already has a name that says what it means. The upper
+    // end is refused because past about here the series term is arithmetic noise against a road path
+    // of a few thousand: the one published measurement of this interface bounds it below 6 × 10⁴.
+    if (conductance < 0.0)
+    {
+        throw std::runtime_error("OSR_TYRE_CONTACT cannot be negative: '" + value +
+                                 "'. Use 'perfect' for no interface resistance at all.");
+    }
+
+    if (conductance > 1.0e6)
+    {
+        throw std::runtime_error("OSR_TYRE_CONTACT is far past any published figure for this interface: '" + value +
+                                 "'. The measured rubber-on-asphalt value is 2.52e4.");
+    }
+
+    return conductance;
+}
+
+// Degrees Celsius, and there is deliberately no word for "the car's own" — unset already says it.
+// What is refused is the range that is not a tread window: a compound whose grip peaks below freezing
+// or above the temperature its own curve is falling off at is not a compound anybody has published.
+[[nodiscard]] std::optional<double> tyreIdealTemperature()
+{
+    const auto value = setting("OSR_TYRE_IDEAL");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto consumed = std::size_t{0};
+    auto degrees = 0.0;
+
+    try
+    {
+        degrees = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_TYRE_IDEAL is not a number of degrees Celsius: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_TYRE_IDEAL is not a number of degrees Celsius: '" + value + "'.");
+    }
+
+    if (degrees < 0.0 || degrees > 150.0)
+    {
+        throw std::runtime_error("OSR_TYRE_IDEAL is where a tread's grip plateau is centred and lies between 0 and "
+                                 "150: '" +
+                                 value + "'. The shipped car is 85 and the sourced road-tyre band is 45 to 65.");
+    }
+
+    return degrees;
+}
+
+// Degrees Celsius, parsed on `OSR_SUN`'s terms: there is no "off" for a weather, and what is refused
+// is the range that is not a temperature a car is driven in.
+[[nodiscard]] std::optional<bool> brakeThermal()
+{
+    const auto value = setting("OSR_BRAKE_THERMAL");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_BRAKE_THERMAL is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] double airTemperatureCelsius()
+{
+    const auto value = setting("OSR_AIR_TEMP");
+    if (value.empty())
+    {
+        return 20.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto degrees = 0.0;
+
+    try
+    {
+        degrees = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_AIR_TEMP is not a number of degrees Celsius: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_AIR_TEMP is not a number of degrees Celsius: '" + value + "'.");
+    }
+
+    if (degrees < -30.0 || degrees > 60.0)
+    {
+        throw std::runtime_error("OSR_AIR_TEMP is an air temperature in Celsius and lies between -30 and 60: '" +
+                                 value + "'.");
+    }
+
+    return degrees;
 }
 
 // A look multiplier: a number, or the word `off` for the control. It served two knobs until the lens
@@ -1023,6 +1324,12 @@ RunOptions runOptions()
                       .beltBridgingMillimetres = beltBridgingMillimetres(),
                       .geometricLoadPath = geometricLoadPath(),
                       .drivelineReaction = drivelineReaction(),
+                      .tyreTemperature = tyreTemperature(),
+                      .tyreThermal = tyreThermal(),
+                      .tyreContactConductance = tyreContactConductance(),
+                      .tyreIdealTemperature = tyreIdealTemperature(),
+                      .brakeThermal = brakeThermal(),
+                      .airTemperatureCelsius = airTemperatureCelsius(),
                       .assists = chosenAssists,
                       .fogDensityScale = lookMultiplier("OSR_FOG"),
                       .rainIntensity = rainIntensity(),
