@@ -154,6 +154,12 @@ export class SimulatedCar
     // property of the rubber and the road and each corner carries its own copy of both.
     std::optional<double> tyreContactOverride;
 
+    // And this session's `OSR_TYRE_ROAD_AREA`, a fraction of the patch, likewise — stamped onto
+    // every corner's tyre for `tyreContactOverride`'s reason, and held and re-stamped for the reason
+    // all of these are. One is the gross patch and is what the shipped car states; 0.72 is this
+    // tread's rubber after its 28% of groove.
+    std::optional<double> tyreRoadAreaOverride;
+
     // And this session's `OSR_TYRE_IDEAL`, degrees Celsius — where the compound's grip plateau is
     // centred. Stamped onto every corner's grip curve for `tyreContactOverride`'s reason, and held
     // and re-stamped for the reason all six of these are.
@@ -284,10 +290,10 @@ public:
     SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
                  double heading, DriverChoice driver, double beltBridgingLength, std::optional<bool> loadPath,
                  std::optional<bool> drivelineReaction, std::optional<bool> tyreThermal,
-                 std::optional<double> tyreContactConductance, std::optional<double> tyreIdealTemperature,
-                 std::optional<bool> tyrePressure, std::optional<bool> brakeThermal,
-                 std::optional<double> tyreTemperature, const raceengine::AmbientConditions& ambient,
-                 AssistSelection assists);
+                 std::optional<double> tyreContactConductance, std::optional<double> tyreRoadAreaFraction,
+                 std::optional<double> tyreIdealTemperature, std::optional<bool> tyrePressure,
+                 std::optional<bool> brakeThermal, std::optional<double> tyreTemperature,
+                 const raceengine::AmbientConditions& ambient, AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -407,6 +413,9 @@ private:
     // And this session's `OSR_TYRE_CONTACT`, likewise — onto all four tyres.
     void stampTyreContactOverride();
 
+    // And this session's `OSR_TYRE_ROAD_AREA`, likewise — onto all four tyres.
+    void stampTyreRoadAreaOverride();
+
     // And this session's `OSR_TYRE_IDEAL`, likewise — onto all four grip curves.
     void stampTyreIdealOverride();
 
@@ -514,11 +523,10 @@ deriveSteeringAssist(const raceengine::VehicleSetup& setup, const double targetR
 SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::PhysicsWorld& world, const glm::dvec3& grid,
                            const double heading, const DriverChoice driver, const double beltBridgingLength,
                            const std::optional<bool> loadPath, const std::optional<bool> drivelineReaction,
-                           const std::optional<bool> tyreThermal,
-                           const std::optional<double> tyreContactConductance,
-                           const std::optional<double> tyreIdealTemperature,
-                           const std::optional<bool> tyrePressure, const std::optional<bool> brakeThermal,
-                           const std::optional<double> startingTemperature,
+                           const std::optional<bool> tyreThermal, const std::optional<double> tyreContactConductance,
+                           const std::optional<double> tyreRoadAreaFraction,
+                           const std::optional<double> tyreIdealTemperature, const std::optional<bool> tyrePressure,
+                           const std::optional<bool> brakeThermal, const std::optional<double> startingTemperature,
                            const raceengine::AmbientConditions& conditions, const AssistSelection chosenAssists) :
     engine(engine),
     world(world),
@@ -528,6 +536,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     tyreThermalOverride(tyreThermal),
     brakeThermalOverride(brakeThermal),
     tyreContactOverride(tyreContactConductance),
+    tyreRoadAreaOverride(tyreRoadAreaFraction),
     tyreIdealOverride(tyreIdealTemperature),
     tyrePressureOverride(tyrePressure),
     tyreTemperature(startingTemperature),
@@ -552,6 +561,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     stampTyreThermalOverride();
     stampBrakeThermalOverride();
     stampTyreContactOverride();
+    stampTyreRoadAreaOverride();
     stampTyreIdealOverride();
     stampTyrePressureOverride();
 
@@ -769,6 +779,21 @@ void SimulatedCar::stampTyreContactOverride()
     }
 }
 
+void SimulatedCar::stampTyreRoadAreaOverride()
+{
+    if (!tyreRoadAreaOverride.has_value())
+    {
+        return;
+    }
+
+    // Every corner, for `stampTyreContactOverride`'s reason. One is the gross patch and is the model
+    // as it has always been, which is what the shipped car states.
+    for (auto& corner : setup.corners)
+    {
+        corner.tyre.thermal.roadAreaFraction = tyreRoadAreaOverride.value();
+    }
+}
+
 void SimulatedCar::stampTyrePressureOverride()
 {
     if (tyrePressureOverride.has_value())
@@ -888,6 +913,7 @@ void SimulatedCar::takeTune()
     stampTyreThermalOverride();
     stampBrakeThermalOverride();
     stampTyreContactOverride();
+    stampTyreRoadAreaOverride();
     stampTyreIdealOverride();
     stampTyrePressureOverride();
     stampAssistOverride();

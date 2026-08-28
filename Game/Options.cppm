@@ -215,6 +215,16 @@ export struct RunOptions
     // is a knob and not yet a default. `docs/tyre-state-brief.md`.
     std::optional<double> tyreContactConductance;
 
+    // What fraction of the geometric contact patch conducts into the road. `OSR_TYRE_ROAD_AREA`: a
+    // fraction; unset leaves the car's own figure alone.
+    //
+    // **The shipped car states none, which is the gross patch and is what the model has always
+    // multiplied its road conductance by.** The honest figure for this tread is **0.72** — 28% of it
+    // is groove and a groove does not touch the road — which is what the A/B is for. A hole in the
+    // conducting area rather than a second path, and a different mechanism from `OSR_TYRE_CONTACT`,
+    // whose measured figure is a smooth-tread one. `docs/tyre-state-brief.md`.
+    std::optional<double> tyreRoadAreaFraction;
+
     // Where this compound's grip plateau is centred, degrees Celsius. `OSR_TYRE_IDEAL`: a number;
     // unset leaves the car's own window alone, which is **65 °C for the Golf since 2026-08-28**.
     //
@@ -807,6 +817,49 @@ namespace
     return conductance;
 }
 
+// A fraction of the patch, and there is deliberately no word for "the car's own" — unset already
+// says it. One is the gross patch and is what the shipped car states; what is refused is anything
+// that is not a fraction of an area, and the low end is refused because a patch nine tenths groove
+// is not a tread anybody has published — performance summer treads run about 25-30% void.
+[[nodiscard]] std::optional<double> tyreRoadAreaFraction()
+{
+    const auto value = setting("OSR_TYRE_ROAD_AREA");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto consumed = std::size_t{0};
+    auto fraction = 0.0;
+
+    try
+    {
+        fraction = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_TYRE_ROAD_AREA is the fraction of the contact patch that is rubber rather than "
+                                 "groove, not '" +
+                                 value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_TYRE_ROAD_AREA is the fraction of the contact patch that is rubber rather than "
+                                 "groove, not '" +
+                                 value + "'.");
+    }
+
+    if (fraction < 0.1 || fraction > 1.0)
+    {
+        throw std::runtime_error("OSR_TYRE_ROAD_AREA lies between 0.1 and 1.0: '" + value +
+                                 "'. This tread's own figure is 0.72, and 1.0 is the gross patch the shipped car "
+                                 "states.");
+    }
+
+    return fraction;
+}
+
 // Degrees Celsius, and there is deliberately no word for "the car's own" — unset already says it.
 // What is refused is the range that is not a tread window: a compound whose grip peaks below freezing
 // or above the temperature its own curve is falling off at is not a compound anybody has published.
@@ -1363,6 +1416,7 @@ RunOptions runOptions()
                       .tyreThermal = tyreThermal(),
                       .tyrePressure = tyrePressure(),
                       .tyreContactConductance = tyreContactConductance(),
+                      .tyreRoadAreaFraction = tyreRoadAreaFraction(),
                       .tyreIdealTemperature = tyreIdealTemperature(),
                       .brakeThermal = brakeThermal(),
                       .airTemperatureCelsius = airTemperatureCelsius(),
