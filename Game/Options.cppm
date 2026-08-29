@@ -220,11 +220,11 @@ export struct RunOptions
     // What fraction of the geometric contact patch conducts into the road. `OSR_TYRE_ROAD_AREA`: a
     // fraction; unset leaves the car's own figure alone.
     //
-    // **The shipped car states none, which is the gross patch and is what the model has always
-    // multiplied its road conductance by.** The honest figure for this tread is **0.72** — 28% of it
-    // is groove and a groove does not touch the road — which is what the A/B is for. A hole in the
-    // conducting area rather than a second path, and a different mechanism from `OSR_TYRE_CONTACT`,
-    // whose measured figure is a smooth-tread one. `docs/tyre-state-brief.md`.
+    // **The Golf states 0.72 since 2026-08-29** — 28% of this tread is groove and a groove does not
+    // touch the road — so `OSR_TYRE_ROAD_AREA=1.0` is the control now: the gross patch, which is
+    // what the model multiplied its road conductance by until then. A hole in the conducting area
+    // rather than a second path, and a different mechanism from `OSR_TYRE_CONTACT`, whose measured
+    // figure is a smooth-tread one. `docs/tyre-state-brief.md`.
     std::optional<double> tyreRoadAreaFraction;
 
     // Where this compound's grip plateau is centred, degrees Celsius. `OSR_TYRE_IDEAL`: a number;

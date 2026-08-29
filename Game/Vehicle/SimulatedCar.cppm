@@ -787,8 +787,8 @@ void SimulatedCar::stampTyreRoadAreaOverride()
         return;
     }
 
-    // Every corner, for `stampTyreContactOverride`'s reason. One is the gross patch and is the model
-    // as it has always been, which is what the shipped car states.
+    // Every corner, for `stampTyreContactOverride`'s reason. The Golf states 0.72 since 2026-08-29,
+    // so `OSR_TYRE_ROAD_AREA=1.0` is the control — the gross patch, the model as it was before.
     for (auto& corner : setup.corners)
     {
         corner.tyre.thermal.roadAreaFraction = tyreRoadAreaOverride.value();
@@ -1282,7 +1282,8 @@ namespace
                                                      .discTemperature = wheel.discTemperature,
                                                      .wheelTemperature = wheel.wheelTemperature,
                                                      .gasTemperature = wheel.tyreGasTemperature,
-                                                     .tyrePressurePsi = wheel.tyrePressurePsi};
+                                                     .tyrePressurePsi = wheel.tyrePressurePsi,
+                                                     .recession = wheel.complianceRecession};
     }
 
     return trace;
