@@ -196,13 +196,15 @@ export struct RunOptions
     std::optional<bool> tyreThermal;
 
     // Whether the air inside the tyres carries a temperature and a pressure. `OSR_TYRE_PRESSURE`,
-    // the word `on` or the word `off`, unset for the car's own setting — which is **off** while the
-    // grip half of it is unsourced.
+    // the word `on` or the word `off`, unset for the car's own setting — which is **on for the Golf
+    // since 2026-08-29**, on Dominic's instruction: *"put it on. just because i cant feel something
+    // doesn't mean its bad."*
     //
     // What it adds is the gas law and two couplings that follow from it: a cold tyre is a softer
-    // spring and a draggier one. **Off is every performance figure this project has**, because a car
-    // with it off is permanently at the ideal pressure its own vertical rate and rolling resistance
-    // are quoted at. `docs/tyre-state-brief.md`, section 7.
+    // spring and a draggier one. **`off` is the control and the way back**, and it is what every
+    // performance figure older than the switch was measured on — a car permanently at the ideal
+    // pressure its own vertical rate and rolling resistance are quoted at.
+    // `docs/tyre-state-brief.md`, section 7.
     std::optional<bool> tyrePressure;
 
     // The thermal contact conductance of the tread-road interface, W/(m²·K). `OSR_TYRE_CONTACT`: a
