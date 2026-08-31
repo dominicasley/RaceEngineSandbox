@@ -158,3 +158,5 @@ pedal.throttle_full  6.0
 assist.abs  1
 assist.tc   sport
 #assist.xds  1
+assist.yawdelay        1
+assist.yawdelayshare   0.5

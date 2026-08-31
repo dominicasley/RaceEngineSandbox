@@ -1253,6 +1253,8 @@ namespace
         .tractionEngineActive = channels.tractionEngineActive,
         .corneringEnabled = assists.cornering.enabled,
         .corneringActive = channels.corneringActive,
+        .yawDelayEnabled = assists.antilock.yawMomentDelay,
+        .yawDelayActive = channels.yawDelayEngaged,
         .engineTorqueReduction = channels.engineTorqueReduction};
 
     // By index, both sides. `raceengine::tracedCornerCount` and `raceengine::cornerCount` are the
