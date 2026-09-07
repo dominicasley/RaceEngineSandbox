@@ -33,6 +33,17 @@ export enum class SceneChoice {
     Apron
 };
 
+export enum class TrackChoice {
+    // Grand City Parkway: ExPanda's fictional American city, a freeroam layout with 18.7 km of
+    // street in it. **The default since 2026-09-06, on Dominic's instruction.**
+    GrandCityParkway,
+    // Mount Panorama, and the circuit every driving measurement in `docs/` was taken on. **Both
+    // frame gates name it explicitly** — see `scripts/verify-parity.sh` — because a golden frame is
+    // a photograph of one world and a gate that followed this default would have gone red the day
+    // the default moved and reported it as a rendering change.
+    Bathurst
+};
+
 export enum class CameraChoice { Chase, Cockpit, Fixed };
 
 export enum class DriverChoice {
@@ -108,6 +119,12 @@ export struct CameraPose
 export struct RunOptions
 {
     SceneChoice scene = SceneChoice::Circuit;
+    // Which circuit the driving scene builds. `OSR_TRACK`, the word `gcp` or the word `bathurst`.
+    //
+    // It is the one knob here that changes what world the game is, so it is validated against the
+    // scene like the camera and the driver are: the apron is a composed fixture with no track in it
+    // at all, and naming a track alongside it is a request the game cannot honour.
+    TrackChoice track = TrackChoice::GrandCityParkway;
     CameraChoice camera = CameraChoice::Chase;
     DriverChoice driver = DriverChoice::Driver;
 
@@ -169,6 +186,27 @@ export struct RunOptions
     // **+5.6%**, 42.18 → 44.54 m. `docs/suspension-fidelity-brief.md`, item 3, and
     // `docs/known-red.md` for the five reds it opened.
     std::optional<bool> drivelineReaction;
+
+    // Whether the city's derived collision stands. `OSR_WORLD_COLLIDERS`, the word `on` or the word
+    // `off`, and unset is **on** — which is a change of world rather than a change of setting, so it
+    // is here as the control rather than as a preference.
+    //
+    // What it switches is the pair of collider exports beside the track: about 8150 building hulls
+    // and the static street furniture, every one of them a convex solid derived from geometry
+    // Assetto Corsa only ever drew. `off` is the city as this game had it before 2026-09-06, which
+    // is a city whose facades a car passes straight through. A track that states no collider assets
+    // is unaffected either way, and Mount Panorama is one — so both frame gates see nothing of this.
+    bool worldColliders = true;
+
+    // Whether the draw walk skips geometry the frame's own prepass proved is hidden.
+    // `OSR_OCCLUSION`, the word `on` or the word `off`, and unset is **on**.
+    //
+    // It is here as a control rather than as a preference, and it is the one visibility test in the
+    // frame that is not exact: the grid a box is tested against is a frame or two old, so `off` is
+    // the answer to "did the culler delete that". A city is what it exists for — the tall side of
+    // Grand City Parkway hides most of an eighteen-million-triangle map from any street in it — and
+    // a circuit with nothing standing between the camera and the horizon gets very little from it.
+    bool occlusionCulling = true;
 
     // Where a session's tyres start, in degrees Celsius. `OSR_TYRE_TEMP`: a number, or the word
     // `ambient` for the track's own temperature.
@@ -432,6 +470,37 @@ namespace
 }
 
 // Each scene states its own camera, so the gates name the scene and get the view that goes with it.
+[[nodiscard]] TrackChoice track(const SceneChoice chosen)
+{
+    const auto value = setting("OSR_TRACK");
+    if (value.empty())
+    {
+        return TrackChoice::GrandCityParkway;
+    }
+
+    // Stated on the apron it is a contradiction rather than a harmless extra: that scene builds no
+    // physics world and loads no track, so a run naming one would silently get the scene it asked
+    // for and none of the world it asked for.
+    if (chosen == SceneChoice::Apron)
+    {
+        throw std::runtime_error("OSR_TRACK names a circuit for the apron, which has no circuit in it: its world is a "
+                                 "building, a ground plane, a bollard and a placed car.");
+    }
+
+    if (value == "gcp")
+    {
+        return TrackChoice::GrandCityParkway;
+    }
+
+    if (value == "bathurst")
+    {
+        return TrackChoice::Bathurst;
+    }
+
+    throw std::runtime_error("OSR_TRACK names a circuit this game does not carry: '" + value +
+                             "'. It takes 'gcp' or 'bathurst'.");
+}
+
 [[nodiscard]] CameraChoice camera(const SceneChoice chosen)
 {
     const auto value = setting("OSR_CAMERA");
@@ -676,6 +745,41 @@ namespace
 
     throw std::runtime_error("OSR_DRIVELINE_REACTION is 'on' or 'off', not '" + value +
                              "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] bool worldColliders()
+{
+    const auto value = setting("OSR_WORLD_COLLIDERS");
+    if (value.empty() || value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_WORLD_COLLIDERS is 'on' or 'off', not '" + value +
+                             "'. Unset is 'on', which is the city with its buildings solid.");
+}
+
+[[nodiscard]] bool occlusionCulling()
+{
+    const auto value = setting("OSR_OCCLUSION");
+    if (value.empty() || value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_OCCLUSION is 'on' or 'off', not '" + value +
+                             "'. Unset is 'on', which is the draw walk skipping what the prepass "
+                             "proved is hidden.");
 }
 
 [[nodiscard]] TyreTemperatureChoice tyreTemperature()
@@ -1408,12 +1512,15 @@ RunOptions runOptions()
     const auto [cloudMapWidth, cloudMapHeight] = cloudMapSize();
 
     return RunOptions{.scene = chosen,
+                      .track = track(chosen),
                       .camera = chosenCamera,
                       .driver = driver(chosen),
                       .rackTrace = rackTrace(chosen),
                       .beltBridgingMillimetres = beltBridgingMillimetres(),
                       .geometricLoadPath = geometricLoadPath(),
                       .drivelineReaction = drivelineReaction(),
+                      .worldColliders = worldColliders(),
+                      .occlusionCulling = occlusionCulling(),
                       .tyreTemperature = tyreTemperature(),
                       .tyreThermal = tyreThermal(),
                       .tyrePressure = tyrePressure(),

@@ -1,0 +1,568 @@
+{
+  "id": "grand_city_parkway",
+  "path": "/home/dominic-asley/dev/assets/ac-maps/grand_city_parkway",
+  "layout": null,
+  "layouts": [
+    "freeroam"
+  ],
+  "ui": {
+    "name": "GRAND CITY PARKWAY",
+    "description": "- visit patreon.com/expanda_ac to unlock the full city freeroam for this track -<br><br>Grand City Parkway is a fictional recreation of Huston, Texas Parkway Ring Roads for Assetto Corsa - made by ExPanda. <br><br>The map consists of 6 super detailed city ringroads, that are visally inspired by the ringroads of Huston Texas. The roads are different themed, with scenes switching from beach drive, to suburbs, to inner city centre. Generally the map is meant for city drifting or parkway traffic driving, while offering a lot of interesting places and routes to discover.",
+    "geotags": [
+      "35° 31′ 33″ N",
+      "139° 46′ 11″ E"
+    ],
+    "country": "USA",
+    "city": "Texas",
+    "length": "18720",
+    "width": "18720",
+    "pitboxes": "46",
+    "run": "DRIFT",
+    "author": "ExPanda",
+    "version": "0.8",
+    "url": "https://www.patreon.com/c/expanda_ac/posts",
+    "year": 2025,
+    "tags": [
+      "#drift",
+      "traffic",
+      "city",
+      "circuit",
+      "freeroam",
+      "usa"
+    ]
+  },
+  "models": [
+    {
+      "file": "grand_city_parkway_pits.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 28386
+    },
+    {
+      "file": "expanda_gcp_road_free.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 396465091
+    },
+    {
+      "file": "expanda_gcp_build_a.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 236714965
+    },
+    {
+      "file": "expanda_gcp_build_b.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 214872202
+    },
+    {
+      "file": "expanda_gcp_det.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 223287306
+    },
+    {
+      "file": "expanda_gcp_window.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 200632606
+    },
+    {
+      "file": "expanda_gcp_trees.kn5",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "exists": true,
+      "size": 193756463
+    }
+  ],
+  "dynamic_objects": [],
+  "surfaces": [
+    {
+      "index": 0,
+      "key": "ROAD",
+      "friction": 0.98,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "NULL"
+    },
+    {
+      "index": 1,
+      "key": "GRASS",
+      "friction": 0.85,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.3,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.0,
+      "vibration_length": 0.0,
+      "wav": null,
+      "ff_effect": "0"
+    },
+    {
+      "index": 2,
+      "key": "KERB",
+      "friction": 0.94,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.2,
+      "vibration_length": 1.0,
+      "wav": "kerb.wav",
+      "ff_effect": "1"
+    },
+    {
+      "index": 3,
+      "key": "MARK",
+      "friction": 0.93,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.08,
+      "vibration_length": 1.0,
+      "wav": "kerb.wav",
+      "ff_effect": "1"
+    },
+    {
+      "index": 4,
+      "key": "TILE",
+      "friction": 0.92,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.26,
+      "vibration_length": 4.0,
+      "wav": "dirt.wav",
+      "ff_effect": "1"
+    },
+    {
+      "index": 5,
+      "key": "SAND",
+      "friction": 0.82,
+      "damping": 0.0,
+      "is_valid_track": true,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.02,
+      "vibration_length": 0.8,
+      "wav": "dirt.wav",
+      "ff_effect": "1"
+    },
+    {
+      "index": 6,
+      "key": "KSTREE",
+      "friction": 0.0,
+      "damping": 0.0,
+      "is_valid_track": false,
+      "is_pitlane": false,
+      "dirt_additive": 0.0,
+      "black_flag_time": 0.0,
+      "sin_height": 0.0,
+      "sin_length": 0.0,
+      "vibration_gain": 0.01,
+      "vibration_length": 0.8,
+      "wav": "dirt.wav",
+      "ff_effect": "0"
+    }
+  ],
+  "physics": {
+    "meshes": 43,
+    "triangles": 643732,
+    "by_surface": [
+      {
+        "key": "KERB",
+        "meshes": 5,
+        "triangles": 79646,
+        "vertices": 141680,
+        "models": [
+          "expanda_gcp_det.kn5",
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1KERB0.sidew_part0_lod250m",
+          "1KERB0.sidew_part1_lod250m",
+          "1KERB0.sidew_part2_lod250m"
+        ],
+        "surface": {
+          "index": 2,
+          "key": "KERB",
+          "friction": 0.94,
+          "damping": 0.0,
+          "is_valid_track": true,
+          "is_pitlane": false,
+          "dirt_additive": 0.0,
+          "black_flag_time": 0.0,
+          "sin_height": 0.0,
+          "sin_length": 0.0,
+          "vibration_gain": 0.2,
+          "vibration_length": 1.0,
+          "wav": "kerb.wav",
+          "ff_effect": "1"
+        }
+      },
+      {
+        "key": "ROAD",
+        "meshes": 3,
+        "triangles": 34313,
+        "vertices": 56226,
+        "models": [
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1ROAD0.yROADing_part0_lod250m",
+          "1ROAD0.yROADing_part1_lod250m",
+          "1ROAD0.free"
+        ],
+        "surface": {
+          "index": 0,
+          "key": "ROAD",
+          "friction": 0.98,
+          "damping": 0.0,
+          "is_valid_track": true,
+          "is_pitlane": false,
+          "dirt_additive": 0.0,
+          "black_flag_time": 0.0,
+          "sin_height": 0.0,
+          "sin_length": 0.0,
+          "vibration_gain": 0.0,
+          "vibration_length": 0.0,
+          "wav": null,
+          "ff_effect": "NULL"
+        }
+      },
+      {
+        "key": "MARK",
+        "meshes": 1,
+        "triangles": 17013,
+        "vertices": 33772,
+        "models": [
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1MARK0.plastside_lod450m"
+        ],
+        "surface": {
+          "index": 3,
+          "key": "MARK",
+          "friction": 0.93,
+          "damping": 0.0,
+          "is_valid_track": true,
+          "is_pitlane": false,
+          "dirt_additive": 0.0,
+          "black_flag_time": 0.0,
+          "sin_height": 0.0,
+          "sin_length": 0.0,
+          "vibration_gain": 0.08,
+          "vibration_length": 1.0,
+          "wav": "kerb.wav",
+          "ff_effect": "1"
+        }
+      },
+      {
+        "key": "GRASS",
+        "meshes": 2,
+        "triangles": 6306,
+        "vertices": 12497,
+        "models": [
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1GRASS0.grass",
+          "1GRASS0.Cylinder.001"
+        ],
+        "surface": {
+          "index": 1,
+          "key": "GRASS",
+          "friction": 0.85,
+          "damping": 0.0,
+          "is_valid_track": true,
+          "is_pitlane": false,
+          "dirt_additive": 0.3,
+          "black_flag_time": 0.0,
+          "sin_height": 0.0,
+          "sin_length": 0.0,
+          "vibration_gain": 0.0,
+          "vibration_length": 0.0,
+          "wav": null,
+          "ff_effect": "0"
+        }
+      }
+    ],
+    "unmatched": [
+      {
+        "key": "WALL",
+        "meshes": 30,
+        "triangles": 503559,
+        "vertices": 883316,
+        "models": [
+          "expanda_gcp_det.kn5",
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1WALL0.lamp.002_part0_lod250m",
+          "1WALL0.lamp.002_part1_lod250m",
+          "1WALL0.lamp.002_part2_lod250m"
+        ]
+      },
+      {
+        "key": "RROD",
+        "meshes": 2,
+        "triangles": 2895,
+        "vertices": 4429,
+        "models": [
+          "expanda_gcp_road_free.kn5"
+        ],
+        "examples": [
+          "1rrod0.yrroding_part2_lod250m",
+          "1rrod0.ymid_lod250m"
+        ]
+      }
+    ]
+  },
+  "ai": {},
+  "data": {
+    "camera_facing.ini": {
+      "CAMERA_FACING_0": {
+        "SURFACE": "1MARK0.plastside_lod450m",
+        "ELEMENTS": "19250",
+        "SIZE": "0.7,1.9",
+        "TEXTURE": "content/texture/people_stand.dds",
+        "TEXTURE_ROWS": "2",
+        "TEXTURE_COLUMNS": "11",
+        "SHADED": "1",
+        "DIFFUSE": "0.035,0.035,0.035",
+        "AMBIENT": "0.1,0.1,0.1"
+      },
+      "CAMERA_FACING_1": {
+        "SURFACE": "1KERB0.conc_lod450m",
+        "ELEMENTS": "18250",
+        "SIZE": "0.7,1.9",
+        "TEXTURE": "content/texture/people_stand.dds",
+        "TEXTURE_ROWS": "2",
+        "TEXTURE_COLUMNS": "11",
+        "SHADED": "1",
+        "DIFFUSE": "0.035,0.035,0.035",
+        "AMBIENT": "0.1,0.1,0.1"
+      }
+    },
+    "map.ini": {
+      "PARAMETERS": {
+        "WIDTH": "1192",
+        "HEIGHT": "1176",
+        "X_OFFSET": "595.627685546875",
+        "Z_OFFSET": "588.087036132813",
+        "MARGIN": "10",
+        "SCALE_FACTOR": "1",
+        "DRAWING_SIZE": "10"
+      }
+    },
+    "surfaces.ini": {
+      "SURFACE_0": {
+        "KEY": "ROAD",
+        "FRICTION": "0.98",
+        "DAMPING": "0",
+        "WAV": "",
+        "WAV_PITCH": "extended-0",
+        "FF_EFFECT": "NULL",
+        "DIRT_ADDITIVE": "0",
+        "IS_VALID_TRACK": "1",
+        "BLACK_FLAG_TIME": "0",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.0",
+        "VIBRATION_LENGTH": "0.0"
+      },
+      "_SCRIPTING_PHYSICS": {
+        "ALLOW_TRACK_SCRIPTS": "1",
+        "ALLOW_DISPLAY_SCRIPTS": "1",
+        "ALLOW_NEW_MODE_SCRIPTS": "1",
+        "ALLOW_TOOLS": "1"
+      },
+      "SURFACE_1": {
+        "KEY": "GRASS",
+        "FRICTION": "0.85",
+        "DAMPING": "0",
+        "WAV": "",
+        "WAV_PITCH": "0",
+        "FF_EFFECT": "0",
+        "DIRT_ADDITIVE": "0.3",
+        "IS_VALID_TRACK": "1",
+        "BLACK_FLAG_TIME": "0",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0",
+        "VIBRATION_LENGTH": "0"
+      },
+      "SURFACE_2": {
+        "KEY": "KERB",
+        "FRICTION": "0.94",
+        "DAMPING": "0",
+        "WAV": "kerb.wav",
+        "WAV_PITCH": "1.3",
+        "FF_EFFECT": "1",
+        "DIRT_ADDITIVE": "0",
+        "BLACK_FLAG_TIME": "0",
+        "IS_VALID_TRACK": "1",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.2",
+        "VIBRATION_LENGTH": "1.0"
+      },
+      "SURFACE_3": {
+        "KEY": "MARK",
+        "FRICTION": "0.93",
+        "DAMPING": "0",
+        "WAV": "kerb.wav",
+        "WAV_PITCH": "0.9",
+        "FF_EFFECT": "1",
+        "DIRT_ADDITIVE": "0",
+        "BLACK_FLAG_TIME": "0",
+        "IS_VALID_TRACK": "1",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.08",
+        "VIBRATION_LENGTH": "1.0"
+      },
+      "SURFACE_4": {
+        "KEY": "TILE",
+        "FRICTION": "0.92",
+        "DAMPING": "0",
+        "WAV": "dirt.wav",
+        "WAV_PITCH": "1.1",
+        "FF_EFFECT": "1",
+        "DIRT_ADDITIVE": "0",
+        "BLACK_FLAG_TIME": "0",
+        "IS_VALID_TRACK": "1",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.26",
+        "VIBRATION_LENGTH": "4.0"
+      },
+      "SURFACE_5": {
+        "KEY": "SAND",
+        "FRICTION": "0.82",
+        "DAMPING": "0",
+        "WAV": "dirt.wav",
+        "WAV_PITCH": "1.2",
+        "FF_EFFECT": "1",
+        "DIRT_ADDITIVE": "0",
+        "BLACK_FLAG_TIME": "0",
+        "IS_VALID_TRACK": "1",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.02",
+        "VIBRATION_LENGTH": "0.8"
+      },
+      "SURFACE_6": {
+        "KEY": "KSTREE",
+        "FRICTION": "0.0",
+        "DAMPING": "0",
+        "WAV": "dirt.wav",
+        "WAV_PITCH": "1.2",
+        "FF_EFFECT": "0",
+        "DIRT_ADDITIVE": "0",
+        "BLACK_FLAG_TIME": "0",
+        "IS_VALID_TRACK": "0",
+        "SIN_HEIGHT": "0",
+        "SIN_LENGTH": "0",
+        "IS_PITLANE": "0",
+        "VIBRATION_GAIN": "0.01",
+        "VIBRATION_LENGTH": "0.8"
+      }
+    }
+  }
+}

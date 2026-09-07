@@ -306,6 +306,18 @@ public:
     // The newest tick the publish got through with. Called from the thread that draws.
     [[nodiscard]] CarSnapshot snapshot() const;
 
+    // What the bodywork touched on the tick just run, with the impulse this engine's own solver
+    // applied at each point already in it.
+    //
+    // **Read by the simulation and by nothing else**, from the same thread that ran the tick, which
+    // is why it is a borrow rather than a copy: what reads it is `Simulation::step`, deciding which
+    // of the world's props were hit hard enough to come free. It is not published and must not be —
+    // a manifold is thirty-two points of a state that is already gone by the next tick.
+    [[nodiscard]] const raceengine::ContactManifold& contacts() const
+    {
+        return lastStep.contacts;
+    }
+
     // Main thread. Applied at the top of the next tick, onto the whole car rather than onto the one
     // being driven — see `PlayerCar::reloadSetupIfChanged` for why a sheet must never be layered on
     // its own last application.

@@ -1,0 +1,34 @@
+1049 meshes, 18111448 triangles, 52 materials, 105 textures -> out/gcp/visual.glb (1033.7 MiB)
+    grand_city_parkway_pits.kn5   95 meshes       95 triangles
+    expanda_gcp_road_free.kn5   171 meshes  2820061 triangles
+    expanda_gcp_build_a.kn5     195 meshes  4511576 triangles
+    expanda_gcp_build_b.kn5     171 meshes  3688896 triangles
+    expanda_gcp_det.kn5         179 meshes  3340468 triangles
+    expanda_gcp_window.kn5       83 meshes  1357868 triangles
+    expanda_gcp_trees.kn5       155 meshes  2392484 triangles
+  converted 51 materials to metalness-roughness (infer); 551 meshes carry tangents
+  glTF 2.0 validation: clean
+	Command being timed: "python3 track.py visual /home/dominic-asley/dev/assets/ac-maps/grand_city_parkway -o out/gcp/visual.glb"
+	User time (seconds): 81.08
+	System time (seconds): 8.15
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:29.29
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 16969420
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 5
+	Minor (reclaiming a frame) page faults: 5506370
+	Voluntary context switches: 68
+	Involuntary context switches: 1510
+	Swaps: 0
+	File system inputs: 1632
+	File system outputs: 2117096
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit=0

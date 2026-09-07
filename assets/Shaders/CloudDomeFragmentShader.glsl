@@ -35,7 +35,7 @@ struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
     vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
-    vec4 position;             // xyz where it was captured, w its slice of probeSpecular
+    vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
 layout(set = SET_FRAME, binding = 0) uniform FrameData {

@@ -36,9 +36,33 @@
 // number somebody liked.
 //
 // The **specular** coefficient is *not* anchored and stays the asset's own: there is no ordinary
-// specular to be relative to, 64 of these 188 materials carrying no highlight at all. Nor is the
-// highlight energy-normalised, because the source model does not normalise it either and the
-// coefficients were chosen against that.
+// specular to be relative to, 64 of these 188 materials carrying no highlight at all. It is,
+// however, read as a **reflectance** rather than as a brightness, because this shader is energy
+// conserving and the classic model is not. Three statements make it so, all of them in the light
+// loop below:
+//
+//   * the lobe is normalised by `(n+8)/8pi`, so raising the exponent narrows the highlight instead
+//     of adding light to it — the same normalisation the water film further down already used;
+//   * the highlight is multiplied by `N.L`, the cosine factor the rendering equation asks of every
+//     reflected term and which the classic model omits, so a light at a grazing angle delivers a
+//     grazing highlight rather than a full one;
+//   * the diffuse term is scaled by `1 - specular`, because light reflected at the interface never
+//     entered the body and cannot leave it again as diffuse. That is the same coupling
+//     PbrFragmentShader writes as `1 - F`, so a shiny surface here pays for its highlight out of
+//     its body exactly as one there does.
+//
+// The reflectance is clamped to [0,1], which is what makes the last two a single budget rather than
+// two independent numbers. Neither track exceeds it today — Bathurst's highest stated specular is
+// exactly 1.0 and Grand City Parkway's is 0.8 — so the clamp is inert on the content that exists
+// and is here for the asset that does not yet.
+//
+// **This does move the content**, and the direction is a function of the exponent, because the
+// coefficients were authored against a lobe that was flatter, brighter and uncosined. The wide
+// highlights the content mostly carries hardly move — 115 of Bathurst's 188 materials sit at
+// exponent 16, where the normalisation is 0.955 — while the 19 tight ones at 200 and above get a
+// far brighter and far smaller peak. That trade is the whole of what energy conservation buys: the
+// highlight's *size* now costs its *strength*, which is why a polished surface reads as polished
+// rather than as a matte one with a wide sheen.
 //
 // The shadow lookup and the spherical-harmonic evaluation below are **the same functions as
 // PbrFragmentShader's**, copied because this renderer compiles each shader from one source string
@@ -74,7 +98,7 @@ struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
     vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
-    vec4 position;             // xyz where it was captured, w its slice of probeSpecular
+    vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
 layout(set = SET_FRAME, binding = 0) uniform FrameData {
@@ -799,6 +823,19 @@ void main()
         specularExponent = max(1.0, specularExponent * maps.g);
     }
 
+    // The highlight as an energy budget, settled once: the specular map above is the last thing
+    // that can move either number, and neither depends on which light is being summed.
+    //
+    // `specularReflectance` is the fraction of arriving light the interface returns, which is also
+    // the fraction the body never receives — so it appears twice below, once as the highlight's
+    // strength and once, subtracted, as the diffuse term's. `specularNormalisation` is the classic
+    // `(n+8)/8pi`, which holds the lobe's integral at that reflectance however tight the exponent
+    // becomes, and it is the same factor the water film uses so that this file states one
+    // normalisation rather than two that can drift apart.
+    float specularReflectance = clamp(specularLevel, 0.0, 1.0);
+    float specularNormalisation = (specularExponent + 8.0) * 0.125 * INVERSE_PI;
+    float diffuseFraction = 1.0 - specularReflectance;
+
     // The rain's wetness, one branch on the scene's own statement so a dry frame is bit-for-bit
     // the shader that had no rain in it. The albedo darkens by nearly half at full wetness — a wet
     // porous surface loses roughly that much diffuse reflectance to internal reflection under the
@@ -869,16 +906,29 @@ void main()
         // makes "ordinary" mean the same thing here as it does in PbrFragmentShader, so a surface
         // at 1.0 reflects exactly what a white dielectric there does and the two models can stand
         // next to each other in one frame without either dragging the exposure meter.
-        diffuseLight += frame.lights[lightIndex].diffuse.rgb * (diffuseLevel * INVERSE_PI * NdL * attenuation);
+        //
+        // `diffuseFraction` is the half of the energy budget the highlight did not take: what the
+        // interface reflects never entered the body, so it cannot leave it again as diffuse. The
+        // same coupling PbrFragmentShader makes with `1 - F`. A material stating no highlight keeps
+        // the whole of its diffuse and is left exactly where it was.
+        diffuseLight += frame.lights[lightIndex].diffuse.rgb
+            * (diffuseLevel * diffuseFraction * INVERSE_PI * NdL * attenuation);
 
         // Gated on NdL rather than on NdH alone: the half-vector still rises towards one as a light
         // slides behind a surface, so an ungated highlight lights the dark side of every kerb. The
         // light's own specular colour, which is the one thing in this frame that reads it — the
         // metalness-roughness path takes its highlight from the diffuse colour and a Fresnel term.
+        //
+        // Normalised and cosine-weighted, which together are what stop the exponent buying energy
+        // it was never given: `specularNormalisation` pays for the lobe's width, so a tighter
+        // highlight is brighter over less of the surface rather than simply narrower, and `NdL` is
+        // the same cosine the diffuse term above pays — a reflected term owes it whatever lobe it
+        // came out of.
         if (NdL > 0.0)
         {
             specularLight += frame.lights[lightIndex].specular.rgb
-                * (specularLevel * pow(NdH, specularExponent) * attenuation);
+                * (specularReflectance * specularNormalisation * pow(NdH, specularExponent) * NdL
+                   * attenuation);
         }
 
         // The water film's own lobe, on top of the material's: water is a dielectric with its own
@@ -886,6 +936,12 @@ void main()
         // sun a wet road throws at a low morning light. Normalised, (n+8)/8pi, so the puddle's much
         // tighter exponent brightens the peak instead of starving it. One branch on the scene's
         // rain; a dry frame never reaches it.
+        //
+        // The `NdL` is the same cosine the two terms above pay, and it is the one part of this lobe
+        // that was not already energy conserving. It costs the film most where the film showed most
+        // — a sun low enough to throw the streak is a sun at a low `NdL` — so the streak is dimmer
+        // than the seat accepted it. Dropping the factor from this term alone puts the tuned
+        // appearance back; the material's highlight above does not depend on it.
         if (wetness > 0.0 && NdL > 0.0)
         {
             float VdH = max(dot(V, H), 0.0);
@@ -895,7 +951,7 @@ void main()
 
             specularLight += frame.lights[lightIndex].specular.rgb
                 * (wetStrength * fresnel * (wetExponent + 8.0) * 0.125 * INVERSE_PI * pow(NdH, wetExponent)
-                   * attenuation);
+                   * NdL * attenuation);
         }
     }
 

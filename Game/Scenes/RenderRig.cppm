@@ -147,7 +147,8 @@ export struct RigBuild
 };
 
 export [[nodiscard]] RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera,
-                                             float skyDistance = 2500.0f, RigAir air = RigAir{});
+                                             float skyDistance = 2500.0f, RigAir air = RigAir{},
+                                             bool occlusionCulling = true);
 
 // The three cameras are one eye. Every field the projection and the view matrix are built from is
 // copied verbatim, so the matrices — and with them the culling, the blended sort keys and the
@@ -288,7 +289,7 @@ raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine,
 }
 
 RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera, const float skyDistance,
-                        const RigAir air)
+                        const RigAir air, const bool occlusionCulling)
 {
     // **Half past four in the afternoon, and the sun is nineteen degrees up** (the derivation is on
     // the option's default). The one number that says what time of day this
@@ -392,6 +393,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                            engine.resource().loadTextFileAsync("assets/Shaders/CloudDomeFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PrepassVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/PrepassFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/OcclusionGridFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/GtaoFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/AoBlurFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/AoUpsampleFragmentShader.glsl"),
@@ -418,7 +420,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
           depthFragmentShader, colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader,
           compositeFragmentShader, worldRainFragmentShader, volumetricFogFragmentShader, fogMarchFragmentShader,
           cloudDomeFragmentShader,
-          prepassVertexShader, prepassFragmentShader, gtaoFragmentShader, aoBlurFragmentShader,
+          prepassVertexShader, prepassFragmentShader, occlusionGridFragmentShader, gtaoFragmentShader, aoBlurFragmentShader,
           aoUpsampleFragmentShader,
           bloomDownsampleFragmentShader, bloomUpsampleFragmentShader, moodyFilmGrade, skyboxModel, skyboxVertexShader,
           skyboxFragmentShader, front, back, left, right, top, bottom] = std::move(loaded).value();
@@ -556,6 +558,32 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                     .blurShader = aoBlurShader,
                     .upsampleShader = aoUpsampleShader,
                     .occlusion = raceengine::AmbientOcclusion{.strength = 1.4f, .radius = 40.0f}}));
+
+    // Occlusion culling, off the buffer the prepass above just became responsible for. It is the
+    // only thing in this rig that makes the frame cheaper rather than better, and it exists for one
+    // scene in particular: Grand City Parkway is eighteen million triangles across two and a half
+    // kilometres, and from any street in it the near side of the block hides most of the rest. The
+    // prepass already rasterises the whole view before anything shades it, so the occluders are
+    // paid for and what this adds is one coarse reduction of them and a copy to the CPU.
+    //
+    // Enabled on the world camera alone, which is where that geometry is: the car layer is one
+    // vehicle and the frame camera records only what is blended. Both of the other two would need a
+    // prepass of their own to have a grid at all.
+    //
+    // Both slacks are left at the engine's own defaults, which OcclusionCulling states and argues
+    // for: one cell of rectangle margin, and ten world units — a metre — of travel lead on top of
+    // however far the eye has actually moved since the grid was photographed. Neither is measured
+    // on this scene, and the knob for finding out is `OSR_OCCLUSION=off`, which is the A/B for
+    // whether the culler is what deleted something rather than a dial for how much.
+    if (occlusionCulling)
+    {
+        auto occlusionGridShader = orThrow(engine.shader().createShader(
+            "occlusion grid", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
+                                               .fragmentShaderSource = occlusionGridFragmentShader}));
+
+        orThrow(engine.occlusionCulling().enable(
+            camera, raceengine::CreateOcclusionCullingDTO{.reduceShader = occlusionGridShader}));
+    }
 
     // **The layered frame** (2026-08-25, Dominic's architecture): the world and the car render into
     // separate buffers, a composite lays one over the other in linear radiance, and one final view

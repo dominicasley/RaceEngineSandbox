@@ -2,9 +2,12 @@ module;
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -12,6 +15,7 @@ module;
 export module osr.game:CircuitScene;
 
 import :CarEntity;
+import :ColliderManifest;
 import :ChaseCameraController;
 import :CockpitCameraController;
 import :FPSCameraController;
@@ -21,7 +25,9 @@ import :RaceTrack;
 import :RenderRig;
 import :Simulation;
 import :SimulatedCar;
+import :ProbeCache;
 import :TrackFrame;
+import :TrafficNetwork;
 import :WiperController;
 
 import raceengine;
@@ -29,16 +35,27 @@ import raceengine;
 namespace osr
 {
 
-// The driving scene: Mount Panorama, the car under the vehicle model, and the camera behind it.
-// This is the game as it is played and it is what the driving gate captures, so it is expected to
-// move when the vehicle model does — that is the whole reason there is a second scene beside it.
+// The driving scene: a circuit, the car under the vehicle model, and the camera behind it. This is
+// the game as it is played and it is what the driving gate captures, so it is expected to move when
+// the vehicle model does — that is the whole reason there is a second scene beside it.
+//
+// **Which circuit is `OSR_TRACK` and this class does not know.** Everything that varies between two
+// of them is a field of `TrackDefinition` (`RaceTrack.cppm`); what is written here is what is true
+// of any of them. The gates pin the track they were blessed against rather than following the
+// game's default, so the default is free to move without a golden moving with it.
 export class CircuitScene
 {
 private:
     raceengine::Engine& engine;
     Scene& scene;
     Camera& camera;
-    // Mount Panorama, twice: the visual model the renderer draws, and the physics model the
+    // Which circuit this is, and the only thing in this scene that knows. Everything below reads
+    // fields off it — the two assets, the shader that draws one of them, the surface table, the grid,
+    // the probe, the fog's ground and the free camera's stand — so adding a circuit is an entry in
+    // `RaceTrack.cppm` and nothing here. A reference into a table with static storage, declared before
+    // the two models because the initialiser list reads it to name them.
+    const TrackDefinition& track;
+    // The circuit, twice: the visual model the renderer draws, and the physics model the
     // collision mesh is read out of. Two files on purpose — the scenery can be re-exported without
     // moving a single triangle a tyre touches, and the BVH never wades through a hotel. The physics
     // model is loaded and never drawn, which is exactly why its buffers survive: the renderer frees
@@ -47,6 +64,39 @@ private:
     // spend. Declared before everything that queries them, the engine's own member-order rule.
     raceengine::Resource<raceengine::Model> trackModel;
     raceengine::Resource<raceengine::Model> physicsModel;
+    // The circuit's third file, and the only one that is optional: CSP's traffic lane graph, where
+    // the track states one. It is loaded for the street light probes below — a lane is where a
+    // street is, and a street is where the sky is boxed in — and it is *held* rather than read and
+    // dropped because the thing that reads the rest of it is traffic, which is next. Nothing on a
+    // circuit with no lanes sets this.
+    std::optional<TrafficNetwork> traffic;
+    // The drawn half of the breakable props, and the wiring that lets one of them move.
+    //
+    // **One renderable for all 3712 of them, and every prop moves through
+    // `RenderableMesh::localTransform`.** That field already existed for the steering wheel and it is
+    // exactly what this needs: the draw path is `nodeMatrix * mesh->modelMatrix * localTransform`,
+    // and a prop's `modelMatrix` is a translation to its own origin — so a body at world pose
+    // `(p, R)` is drawn by writing `translate(p - origin) * R` into that one matrix. No engine change
+    // and no scene node per prop.
+    //
+    // `propMeshes` is indexed by the physics world's prop index and lists which of the renderable's
+    // meshes belong to it; there are 3821 meshes for 3712 bodies, so a prop may own more than one.
+    // `propOrigins` is where each one was placed, read out of the model rather than out of the
+    // manifest so the picture and the geometry cannot drift.
+    raceengine::RenderableModel* propVisuals = nullptr;
+    std::vector<std::vector<std::size_t>> propMeshes;
+    std::vector<glm::dvec3> propOrigins;
+    // Reused every frame so a city where nothing has been hit allocates nothing.
+    std::vector<raceengine::PropTransform> movedProps;
+    void followBrokenProps();
+
+    // The baked diffuse half of this track's probes: where it is kept, what it was baked under, and
+    // whether this run still owes one. Written once, on the frame the last probe finishes, and only
+    // when this run did the baking rather than reading it back.
+    std::string probeCachePath;
+    ProbeCacheKey probeCacheKey;
+    bool probeCacheWritten = true;
+    void writeProbeCacheWhenBaked();
     // The world went inside the simulation when the simulation got a thread: it is the thing being
     // queried from that thread, so it is the thing that must outlive it, and holding it here would
     // leave that guarantee to this class's member order rather than stating it where the thread is.
@@ -154,16 +204,110 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
-    trackModel(orThrow(engine.resource().loadModelAsync(std::string(trackVisualAsset)).get())),
-    physicsModel(orThrow(engine.resource().loadModelAsync(std::string(trackPhysicsAsset)).get()))
+    track(trackFor(options.track)),
+    trackModel(orThrow(engine.resource().loadModelAsync(std::string(track.visualAsset)).get())),
+    physicsModel(orThrow(engine.resource().loadModelAsync(std::string(track.physicsAsset)).get()))
 {
-    // The simulation, with the circuit's surfaces in it. Driven a tick at a time under a capture and
-    // free-running otherwise — the same test `Engine::frameDelta` makes, because it is the same
-    // question: is this run's clock the frame number or the wall.
-    simulation.emplace(
-        engine,
-        orThrow(raceengine::PhysicsWorld::create(orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel)))),
-        std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
+    // The city's own solids, before the world that carries them exists — buildings and the street
+    // furniture too big to shift, as convex hulls derived from geometry Assetto Corsa only ever
+    // drew. A circuit states no such assets and this loop does nothing at all for it, which is why
+    // both frame gates are blind to the whole of this: they pin Mount Panorama.
+    //
+    // **Read and then thrown away, in that order.** These two files are 55 MB of geometry that
+    // nothing draws, so once the hulls are out of them the mesh buffers are cleared — the same thing
+    // the renderer does to a model it has uploaded, done by hand because upload is what usually does
+    // it and nothing here will ever upload. The handles are dropped with them: there is no
+    // model-unload path in the engine yet, so what is reclaimed is the geometry rather than the
+    // records of it.
+    auto colliders = std::vector<raceengine::ConvexCollider>();
+    auto props = std::vector<raceengine::BreakableProp>();
+    auto dynamicPropNames = std::vector<std::string>();
+
+    // The geometry is dropped as soon as it is read. These are 23 MB of hulls that nothing will ever
+    // draw, so the mesh buffers are cleared by hand — the same thing the renderer does to a model it
+    // has uploaded, done here because upload is what usually does it and nothing here uploads.
+    const auto releaseGeometry = [&](const raceengine::Resource<raceengine::Model>& loaded)
+    {
+        engine.memoryStorage().models.mutate(loaded,
+                                             [](raceengine::Model& model)
+                                             {
+                                                 for (auto& buffer : model.meshBuffers)
+                                                 {
+                                                     buffer.data.clear();
+                                                     buffer.data.shrink_to_fit();
+                                                 }
+                                             });
+    };
+
+    const auto takeStaticColliders = [&](const std::string_view asset)
+    {
+        if (asset.empty() || !options.worldColliders)
+        {
+            return;
+        }
+
+        const auto loaded = orThrow(engine.resource().loadModelAsync(std::string(asset)).get());
+        auto hulls = orThrow(trackColliderHulls(engine.memoryStorage(), loaded, track, ColliderBody::Static));
+
+        for (auto& hull : hulls)
+        {
+            colliders.push_back(std::move(hull));
+        }
+
+        releaseGeometry(loaded);
+    };
+
+    takeStaticColliders(track.buildingColliderAsset);
+
+    // The props are the one file read twice, and it has to be: its static half is level geometry the
+    // world takes as fixed hulls, and its dynamic half is bodies with mass. Both halves live in one
+    // export and are told apart by their material, so the file is loaded once and asked two
+    // questions before its geometry is let go.
+    if (options.worldColliders && !track.propColliderAsset.empty())
+    {
+        const auto loaded = orThrow(engine.resource().loadModelAsync(std::string(track.propColliderAsset)).get());
+
+        auto standing = orThrow(trackColliderHulls(engine.memoryStorage(), loaded, track, ColliderBody::Static));
+        for (auto& hull : standing)
+        {
+            colliders.push_back(std::move(hull));
+        }
+
+        if (!track.colliderManifestAsset.empty())
+        {
+            const auto manifest = orThrow(loadColliderManifest(std::string(track.colliderManifestAsset)));
+            props = orThrow(trackBreakableProps(engine.memoryStorage(), loaded, track, manifest));
+
+            // The physics world numbers its props by their position in the *dynamic* half of the
+            // manifest, because `trackBreakableProps` walks it and skips the static ones. So the
+            // same walk done here is the index a contact will report, and it is the only thing that
+            // joins a body to the geometry that draws it.
+            dynamicPropNames.reserve(props.size());
+            for (const auto& entry : manifest.props)
+            {
+                if (entry.dynamic)
+                {
+                    dynamicPropNames.push_back(entry.name);
+                }
+            }
+        }
+
+        releaseGeometry(loaded);
+    }
+
+    if (!colliders.empty() || !props.empty())
+    {
+        engine.log().info("{} static world colliders and {} breakable props on {}", colliders.size(), props.size(),
+                          track.name);
+    }
+
+    // The simulation, with the circuit's surfaces in it and the city's solids beside them. Driven a
+    // tick at a time under a capture and free-running otherwise — the same test `Engine::frameDelta`
+    // makes, because it is the same question: is this run's clock the frame number or the wall.
+    simulation.emplace(engine,
+                       orThrow(raceengine::PhysicsWorld::create(
+                           orThrow(trackCollisionMesh(engine.memoryStorage(), physicsModel, track)), colliders, props)),
+                       std::getenv("RACEENGINE_DUMP_FRAME") != nullptr);
 
     camera.debugName = "world";
 
@@ -183,6 +327,10 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // the whole circuit (it is real geometry that writes depth), and the far plane has to reach the
     // box's *corners* — skyDistance times sqrt(3) — or the sky itself falls out of the frustum. The
     // near plane stays at 0.1 m for the cockpit's own A-pillar; D32 covers this range comfortably.
+    //
+    // It is stated once for every circuit rather than per track, and 5500 m clears the widest one
+    // this game carries by a margin: Grand City Parkway's scenery spans 3.7 km and reaches 354 m up,
+    // which is still inside the same 3 km sky box.
     engine.camera().setClippingPlanes(camera, 1.0f, 55000.0f);
 
     // Where the adaptation starts and what the camera holds until the first reading comes back.
@@ -215,10 +363,10 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     }
     else
     {
-        // Hell Corner from above and behind, and nothing gates it — this is the view to fly the
-        // circuit from by hand. It was the rendering gate's framing for a while and was a poor one:
-        // three flat regions, no car, nothing with a texture on it, and not a pixel either clipped
-        // or under 2/255. The apron scene is the fixture now.
+        // The circuit's own viewpoint from above and behind, and nothing gates it — this is the view
+        // to fly it from by hand. Bathurst's was the rendering gate's framing for a while and was a
+        // poor one: three flat regions, no car, nothing with a texture on it, and not a pixel either
+        // clipped or under 2/255. The apron scene is the fixture now.
         //
         // **`OSR_CAM_POS` and `OSR_CAM_LOOK` override the two halves of this, and that is what makes
         // a view somebody else saw reproducible.** They were added for the ground-transparency
@@ -229,23 +377,25 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         const auto standMetres =
             options.cameraPose.positionStated
                 ? glm::dvec3(options.cameraPose.xMetres, options.cameraPose.yMetres, options.cameraPose.zMetres)
-                : glm::dvec3(-660.0, 195.8, 1216.0);
+                : track.viewpointMetres;
         const auto stand = toWorldUnits(standMetres);
         engine.camera().setPosition(camera, static_cast<float>(stand.x), static_cast<float>(stand.y),
                                     static_cast<float>(stand.z));
 
         // Radians, and the scene's own two are stated in radians rather than converted from degrees
         // so that leaving both variables unset is this camera exactly as it was.
-        const auto yaw = options.cameraPose.lookStated ? glm::radians(options.cameraPose.yawDegrees) : 1.5708;
-        const auto pitch = options.cameraPose.lookStated ? glm::radians(options.cameraPose.pitchDegrees) : -0.08;
+        const auto yaw =
+            options.cameraPose.lookStated ? glm::radians(options.cameraPose.yawDegrees) : track.viewpointYawRadians;
+        const auto pitch =
+            options.cameraPose.lookStated ? glm::radians(options.cameraPose.pitchDegrees) : track.viewpointPitchRadians;
         freeCamera.emplace(engine, yaw, pitch);
     }
 
-    // Three kilometres: outside every point of the circuit from every point a camera can stand.
-    // Bathurst's pit straight stands at about 350 world units — thirty-five metres — and that is
-    // where the fog's density is quoted, so the layer sits on the circuit rather than under it.
-    // The Mountain climbs 174 m out of that, which at the rig's hundred-metre scale height puts
-    // the top of it in a fifth of the air the pit lane stands in.
+    // Three kilometres: outside every point of either circuit from every point a camera can stand.
+    // The fog's density is quoted at the track's own ground — `fogBaseHeightMetres`, 35 m for
+    // Bathurst's pit straight and nothing for a city laid out about sea level — so the layer sits on
+    // the circuit rather than under it. The Mountain climbs 174 m out of its base, which at the rig's
+    // hundred-metre scale height puts the top of it in a fifth of the air the pit lane stands in.
     //
     // A fullscreen lens dirt plate was turned on here for the cockpit and is gone (2026-08-24). It
     // needed the scene to know which view looked through glass; `WindshieldFragmentShader` does not,
@@ -259,7 +409,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                 : std::optional<float>{};
 
     const auto rig = buildRenderRig(engine, scene, camera, 30000.0f,
-                                    RigAir{.baseHeight = 350.0f,
+                                    RigAir{.baseHeight = static_cast<float>(track.fogBaseHeightMetres *
+                                                                            worldUnitsPerMetre),
                                            .densityScale = static_cast<float>(options.fogDensityScale),
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
                                            .rain = static_cast<float>(options.rainIntensity),
@@ -268,7 +419,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                            .cloudMapHeight = options.cloudMapHeight,
                                            .cloudBlendWeight = cloudBlend,
                                            .cloudMarchInterval = options.cloudMarchInterval,
-                                           .cloudMarchStrips = options.cloudMarchStrips});
+                                           .cloudMarchStrips = options.cloudMarchStrips},
+                                    options.occlusionCulling);
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;
@@ -330,7 +482,7 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // the model a surface is drawn with belongs to the surface.
     auto& trackEntity = engine.scene().createEntity(
         scene, CreateRenderableModelDTO{.node = engine.sceneManager().createNode(scene),
-                                        .shader = shaderNamed(engine, std::string(trackVisualShader)),
+                                        .shader = shaderNamed(engine, std::string(track.visualShader)),
                                         .model = trackModel});
 
     const auto placement = toWorldUnits(glm::dvec3(0.0));
@@ -338,6 +490,94 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                       static_cast<float>(placement.y), static_cast<float>(placement.z));
     engine.sceneManager().setScale(trackEntity.node, static_cast<float>(worldUnitsPerMetre),
                                    static_cast<float>(worldUnitsPerMetre), static_cast<float>(worldUnitsPerMetre));
+
+    // The props' own geometry, drawn beside the city rather than inside it. Same placement, same
+    // shader, same world coordinates — it is the same export cut in two, and the cut is what lets one
+    // of these objects move without the other 3711 moving with it.
+    //
+    // Loaded only when there are bodies to attach it to: a run with `OSR_WORLD_COLLIDERS=off` has no
+    // props, and drawing their geometry with nothing behind it would be a city whose street furniture
+    // cannot be hit and is drawn anyway.
+    if (!track.propVisualAsset.empty() && !dynamicPropNames.empty())
+    {
+        const auto propModel = orThrow(engine.resource().loadModelAsync(std::string(track.propVisualAsset)).get());
+
+        auto& propEntity = engine.scene().createEntity(
+            scene, CreateRenderableModelDTO{.node = engine.sceneManager().createNode(scene),
+                                            .shader = shaderNamed(engine, std::string(track.visualShader)),
+                                            .model = propModel});
+
+        engine.sceneManager().setPosition(propEntity.node, static_cast<float>(placement.x),
+                                          static_cast<float>(placement.y), static_cast<float>(placement.z));
+        engine.sceneManager().setScale(propEntity.node, static_cast<float>(worldUnitsPerMetre),
+                                       static_cast<float>(worldUnitsPerMetre),
+                                       static_cast<float>(worldUnitsPerMetre));
+
+        propVisuals = &propEntity;
+
+        // Which drawn mesh belongs to which body. The exporter names a visual mesh
+        // `<body>_visual<n>`, so the body is the name with that suffix taken off — and a body may own
+        // several, which is why this is a list per prop rather than one index.
+        //
+        // Sorted and bisected rather than scanned: 3821 meshes against 3536 bodies is a scan nobody
+        // should write. No `std::map` — a second global module fragment declaring one breaks the
+        // sandbox link outright (CLAUDE.md, *Do not break*).
+        auto byName = std::vector<std::pair<std::string_view, std::size_t>>();
+        byName.reserve(dynamicPropNames.size());
+        for (auto index = std::size_t{0}; index < dynamicPropNames.size(); index++)
+        {
+            byName.emplace_back(std::string_view(dynamicPropNames[index]), index);
+        }
+        std::sort(byName.begin(), byName.end(),
+                  [](const auto& left, const auto& right) { return left.first < right.first; });
+
+        propMeshes.assign(dynamicPropNames.size(), {});
+        propOrigins.assign(dynamicPropNames.size(), glm::dvec3(0.0));
+
+        const auto* model = engine.memoryStorage().models.find(propModel);
+        if (model == nullptr)
+        {
+            raceengine::fail("the prop visual model handle names no live model");
+        }
+
+        auto attached = std::size_t{0};
+        for (auto index = std::size_t{0}; index < model->meshes.size(); index++)
+        {
+            const auto* mesh = engine.memoryStorage().meshes.find(model->meshes[index]);
+            if (mesh == nullptr)
+            {
+                continue;
+            }
+
+            auto body = std::string_view(mesh->name);
+            const auto suffix = body.rfind("_visual");
+            if (suffix == std::string_view::npos)
+            {
+                continue;
+            }
+
+            body = body.substr(0, suffix);
+
+            const auto found = std::lower_bound(byName.begin(), byName.end(), body,
+                                                [](const auto& left, const std::string_view key)
+                                                { return left.first < key; });
+
+            if (found == byName.end() || found->first != body)
+            {
+                // A static prop's visual, which is every mesh whose body is not in the dynamic half.
+                // It is drawn and never moved, which is correct — nothing can shift it.
+                continue;
+            }
+
+            propMeshes[found->second].push_back(index);
+            // Read out of the model rather than out of the manifest, so the thing that draws a prop
+            // and the thing that collides with it cannot disagree about where it was placed.
+            propOrigins[found->second] = glm::dvec3(glm::dmat4(mesh->modelMatrix)[3]);
+            attached++;
+        }
+
+        engine.log().info("{} prop meshes attached to {} breakable bodies", attached, dynamicPropNames.size());
+    }
 
     // The apron's building, ground plane and bollard used to stand at the world origin here, six
     // hundred metres from the grid across a gap in the ribbon, past the camera's far plane and well
@@ -351,7 +591,7 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // racing line a metre from the right-hand edge of an eleven-metre road, and its height is the
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
-    const auto& slot = gridSlots.front();
+    const auto& slot = track.grid.front();
 
     // The weather, from the one number this run states and the sun the scene is already lit by —
     // which is the sun's own pattern: state the hour, derive the sky, the probes, the fog and now
@@ -380,32 +620,140 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                          options.tyrePressure, options.brakeThermal, startingTyreTemperature, ambient, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
-    // The image-based lighting graph, and on an open circuit it is one node rather than three.
+    // The image-based lighting graph, and it is one node rather than three.
     //
     // A circuit is open ground under open sky and its indirect light is the sky, the tarmac and the
     // hillside — which is what one probe over the start line records. Where local probes belong is
-    // where a circuit genuinely occludes the sky: under the trees at the Dipper, in the cutting, and
-    // along the pit wall. That is a probe *per place*, and the constraint that decides how it has to
-    // be built is this: the skybox follows the camera at 2500 units, and a probe outside it records
-    // the box's far wall instead of the sky. Fixed probes 6 km apart cannot all be inside one 250 m
-    // box, so the answer is probes near the car rather than probes everywhere — a different feature
-    // from this one.
+    // where a world genuinely occludes the sky: under the trees at the Dipper, in the cutting, along
+    // the pit wall — and, on a city, in every street that is not the one the probe stands in. That is
+    // a probe *per place*, and the constraint that decides how it has to be built is this: the skybox
+    // follows the camera at 2500 units, and a probe outside it records the box's far wall instead of
+    // the sky. Fixed probes 6 km apart cannot all be inside one 250 m box, so the answer is probes
+    // near the car rather than probes everywhere — a different feature from this one, and the one a
+    // city wants most.
     //
-    // Thirty metres over the pit straight and midway between the two cameras this scene offers,
-    // ninety-odd metres from each, which is what the 250 m skybox allows and the reason it is not
-    // simply over the grid.
-    const auto overTheStraight = toWorldUnits(glm::dvec3(30.0, 65.0, -565.0));
+    // Where it stands is the track's own `lightProbeMetres`.
+    const auto probeStand = toWorldUnits(track.lightProbeMetres);
     static_cast<void>(engine.lightProbe().createProbe(
         scene, raceengine::CreateLightProbeDTO{.name = "sky",
-                                               .position = glm::vec3(static_cast<float>(overTheStraight.x),
-                                                                     static_cast<float>(overTheStraight.y),
-                                                                     static_cast<float>(overTheStraight.z)),
+                                               .position = glm::vec3(static_cast<float>(probeStand.x),
+                                                                     static_cast<float>(probeStand.y),
+                                                                     static_cast<float>(probeStand.z)),
                                                .global = true,
                                                .nearClippingPlane = 5.0f,
                                                // Past the sky box's corners, for the reason the
                                                // camera's own far plane is: a probe that clips the
                                                // box photographs the void below its horizon.
                                                .farClippingPlane = 55000.0f}));
+
+    // ...and the city's local ones, which are read off the traffic export rather than authored
+    // here. `grand_city_parkway_traffic.json` is CSP's lane graph, and the one property of it that
+    // makes this possible is that its points are sampled *onto* the road surface rather than
+    // floated at a recording car's ride height, the way an AC AI line is: a lane point plus a
+    // stated height is a probe standing over the road by exactly that height. Where a lane runs is
+    // where a street is, and a street is the one place in this world where the sky is boxed in —
+    // which is the whole of why a city wants local probes and a circuit does not.
+    //
+    // **Every stand gets a probe — 220 of them — against a frame that shades eight.** That is not
+    // an overrun: the two halves of a probe cost three orders of magnitude apart, and only the
+    // expensive one is rationed. The diffuse half is nine coefficients, 144 bytes, and every probe
+    // keeps its own; the specular half is a megabyte of prefiltered cube, and a probe past the
+    // pool borrows the scratch slice to be photographed and hands it straight back
+    // (`RenderContract.cppm`, `probeSpecularSlices`). Each view then shades from the global probe
+    // plus the seven local ones nearest it, and a fragment inside a box whose probe did not make
+    // that cut reflects the global probe, which is what it did before any of this existed.
+    //
+    // **Ordered outwards from the car**, and that order decides three things at once: which probes
+    // keep the eight real slices, which are photographed first, and therefore what a cold run looks
+    // like in its first seconds. The street the car is standing in is the one that has to be right.
+    if (!track.trafficAsset.empty())
+    {
+        traffic = orThrow(loadTrafficNetwork(std::string(track.trafficAsset)));
+
+        const auto probeOptions = LaneProbeOptions{};
+        auto candidates = laneProbePositions(*traffic, probeOptions);
+        const auto standCount = candidates.size();
+        const auto stands = nearestLaneProbes(std::move(candidates), slot.position, standCount);
+
+        for (const auto& stand : stands)
+        {
+            const auto placed = toWorldUnits(stand.positionMetres);
+
+            static_cast<void>(engine.lightProbe().createProbe(
+                scene,
+                raceengine::CreateLightProbeDTO{
+                    .name = "street lane " + std::to_string(stand.laneId) + " at " +
+                            std::to_string(static_cast<int>(stand.distanceAlongLaneMetres)) + " m",
+                    .position = glm::vec3(static_cast<float>(placed.x), static_cast<float>(placed.y),
+                                          static_cast<float>(placed.z)),
+                    // Thirty-five metres across against a sixty-metre spacing, so two neighbours
+                    // overlap by ten rather than leaving a strip of street between them that falls
+                    // back to the global probe. Twelve metres up and down: the probe stands six
+                    // metres over the road, so the box reaches from six below the tarmac to
+                    // eighteen above it, which covers everything a car or a camera occupies in that
+                    // street and stops well short of claiming the roofline.
+                    .halfExtents = glm::vec3(350.0f, 120.0f, 350.0f),
+                    // Six metres of ramp inside each face, which fits inside the ten metres two
+                    // neighbours overlap by — a hard edge here would be a seam across a road.
+                    .blendDistance = 60.0f,
+                    // Close, because what this probe is *for* is the wall and the tarmac a few
+                    // metres away; far, for the reason the global probe's is — the sky box stands
+                    // at 30,000 units and a probe that clips it photographs the void.
+                    .nearClippingPlane = 2.0f,
+                    .farClippingPlane = 55000.0f}));
+        }
+
+        // The bake, and why it is kept on disk.
+        //
+        // Photographing 220 probes is about ten frames each — six faces, a prefilter, a readback —
+        // so half a minute of startup. What comes out of it is 144 bytes a probe. So it is done
+        // once and written beside the track, and every run after this one reads it back and
+        // photographs only the eight that need a specular slice. The key is checked rather than
+        // trusted: a cache baked under a different sun, a different sky or a different spacing
+        // describes a different city and is a miss, not a file to read anyway.
+        //
+        // It is a cache and not an export. `~/dev/ac-car-data` knows nothing about this engine's
+        // lighting and is not asked to: delete the file and the next run rebuilds it.
+        const auto asset = std::string(track.trafficAsset);
+        const auto slash = asset.rfind('/');
+        probeCachePath = (slash == std::string::npos ? std::string() : asset.substr(0, slash + 1)) + "probe-cache.bin";
+        probeCacheKey = ProbeCacheKey{.track = std::string(track.id),
+                                      .sunElevationDegrees = options.sunElevationDegrees,
+                                      .cloudCoverage = options.cloudCoverage,
+                                      .spacingMetres = probeOptions.spacingMetres,
+                                      .heightMetres = probeOptions.heightMetres,
+                                      .minimumSeparationMetres = probeOptions.minimumSeparationMetres,
+                                      .probeCount = scene.probes.size()};
+
+        auto restored = false;
+
+        if (const auto cached = loadProbeCache(probeCachePath);
+            cached && probeCacheMatches(probeCacheKey, cached->key))
+        {
+            auto snapshot = std::vector<raceengine::ShIrradiance>(probeCacheKey.probeCount);
+
+            for (auto index = std::size_t{0}; index < snapshot.size(); index++)
+            {
+                for (auto coefficient = std::size_t{0}; coefficient < snapshot[index].size(); coefficient++)
+                {
+                    const auto base = index * probeCacheFloatsPerProbe + coefficient * 4;
+                    snapshot[index][coefficient] =
+                        glm::vec4(cached->coefficients[base], cached->coefficients[base + 1],
+                                  cached->coefficients[base + 2], cached->coefficients[base + 3]);
+                }
+            }
+
+            restored = engine.lightProbe().restoreIrradiance(scene, snapshot);
+        }
+
+        // Nothing to write if it was just read. Set before any write is attempted, so a cache that
+        // cannot be written is reported once rather than once a frame.
+        probeCacheWritten = restored;
+
+        engine.log().info("Traffic network {}: {} lanes, {} m; {} probe stands, {} probes placed, cache {}",
+                          track.trafficAsset, traffic->lanes.size(), traffic->counts.totalLaneLengthMetres, standCount,
+                          scene.probes.size(), restored ? "restored" : "to be baked");
+    }
 
     // Nothing ticks until the world is whole. Started before the update callback is registered for
     // the same reason that callback is registered last: the first tick may come immediately.
@@ -418,7 +766,55 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // how often the frame re-marches it, and it is read while that frame is being recorded.
     // `this->engine` because the constructor's own parameter shadows the member here, and the
     // lambda outlives the parameter.
-    engine.onFrame([this] { cloudMarch.update(this->engine); });
+    engine.onFrame(
+        [this]
+        {
+            cloudMarch.update(this->engine);
+            writeProbeCacheWhenBaked();
+        });
+}
+
+// The probe bake, written out on the frame it finishes.
+//
+// On the frame rather than the tick because it is a statement about how far the *renderer* has got,
+// and the scheduler that gets it there runs once per frame. It costs one flag test a frame for the
+// rest of the session once it has fired.
+void CircuitScene::writeProbeCacheWhenBaked()
+{
+    if (probeCacheWritten || !engine.lightProbe().everyProbeCaptured(scene))
+    {
+        return;
+    }
+
+    // Set before the write is attempted, so a cache that cannot be written is reported once rather
+    // than once a frame for the rest of the session.
+    probeCacheWritten = true;
+
+    const auto snapshot = engine.lightProbe().irradianceSnapshot(scene);
+    auto cache = ProbeCache{.key = probeCacheKey, .coefficients = {}};
+    cache.key.probeCount = snapshot.size();
+    cache.coefficients.resize(snapshot.size() * probeCacheFloatsPerProbe);
+
+    for (auto index = std::size_t{0}; index < snapshot.size(); index++)
+    {
+        for (auto coefficient = std::size_t{0}; coefficient < snapshot[index].size(); coefficient++)
+        {
+            const auto base = index * probeCacheFloatsPerProbe + coefficient * 4;
+            cache.coefficients[base] = snapshot[index][coefficient].x;
+            cache.coefficients[base + 1] = snapshot[index][coefficient].y;
+            cache.coefficients[base + 2] = snapshot[index][coefficient].z;
+            cache.coefficients[base + 3] = snapshot[index][coefficient].w;
+        }
+    }
+
+    if (const auto written = saveProbeCache(probeCachePath, cache); !written)
+    {
+        engine.log().info("Probe cache not kept: {}", written.error());
+
+        return;
+    }
+
+    engine.log().info("Probe cache written: {} probes to {}", snapshot.size(), probeCachePath);
 }
 
 CircuitScene::~CircuitScene()
@@ -520,11 +916,51 @@ void CircuitScene::logCameraPose() const
                       metres.x, metres.y, metres.z, yaw, pitch);
 }
 
+// Move the drawn half of whatever has been knocked over.
+//
+// **Written every tick and never cleared**, which is the right shape: a prop that has broken stays
+// broken, so the transform it was last given is the transform it should still have. Nothing walks the
+// 3712 that have not moved.
+//
+// The matrix is `translate(p - origin) * R` because the draw path is
+// `nodeMatrix * mesh->modelMatrix * localTransform`, and a prop's `modelMatrix` is a translation to
+// the origin it was exported about. Built by hand rather than through `glm::translate` so this unit
+// needs no second glm header.
+void CircuitScene::followBrokenProps()
+{
+    if (propVisuals == nullptr)
+    {
+        return;
+    }
+
+    simulation->freeProps(movedProps);
+
+    for (const auto& moved : movedProps)
+    {
+        if (moved.prop >= propMeshes.size())
+        {
+            continue;
+        }
+
+        auto local = glm::dmat4(glm::mat4_cast(moved.orientation));
+        local[3] = glm::dvec4(moved.position - propOrigins[moved.prop], 1.0);
+
+        const auto asFloat = glm::mat4(local);
+        for (const auto mesh : propMeshes[moved.prop])
+        {
+            propVisuals->meshes[mesh].localTransform = asFloat;
+        }
+    }
+}
+
 void CircuitScene::update(float delta)
 {
     player->publish();
     simulation->advance(Simulation::ticksPerEngineTick);
     player->collect();
+
+    // After the tick that may have broken something and before anything draws it.
+    followBrokenProps();
 
     // The wipers, on the engine's own clock rather than a second one kept here: the shader inverts
     // the same sweep law to work out what the blade cleared, so the two must agree about what time

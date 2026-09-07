@@ -45,7 +45,7 @@ struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
     vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
-    vec4 position;             // xyz where it was captured, w its slice of probeSpecular
+    vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
 layout(set = SET_FRAME, binding = 0) uniform FrameData {
@@ -517,6 +517,13 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     }
     vec3 blendedRadiance = vec3(0.0);
     float localWeight = 0.0;
+    // The reflection is weighted separately from the bounce, because a probe can carry one half of
+    // a photograph and not the other. A probe past the backend's specular pool holds no slice of
+    // its own and states position.w < 0: it still says what the indirect light *is* where it
+    // stands, and what it cannot say is what a mirror there would see. Counting its weight against
+    // the reflection would shade it as a black one; leaving it out hands that share to the global
+    // probe below, which is what a fragment outside every local volume already reflects.
+    float localRadianceWeight = 0.0;
 
     // The local probes first, each weighted by how far inside its box this fragment is. Weights
     // are summed rather than normalised here: what they do not add up to is what the global probe
@@ -542,6 +549,13 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
             blendedIrradiance[coefficient] += frame.probes[index].irradiance[coefficient] * weight;
         }
 
+        if (frame.probes[index].position.w < 0.0)
+        {
+            continue;
+        }
+
+        localRadianceWeight += weight;
+
         vec3 direction = parallaxCorrect(index, positionInWorldSpace, worldReflection);
         blendedRadiance += textureLod(probeSpecular, vec4(direction, frame.probes[index].position.w),
                                       specularLevel).rgb * weight;
@@ -556,15 +570,21 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
         {
             blendedIrradiance[coefficient] *= normalisation;
         }
-        blendedRadiance *= normalisation;
         localWeight = 1.0;
+    }
+
+    if (localRadianceWeight > 1.0)
+    {
+        blendedRadiance *= 1.0 / localRadianceWeight;
+        localRadianceWeight = 1.0;
     }
 
     // Whatever the local probes did not account for falls to the global one, which is the scene's
     // view of the sky from somewhere it can see it. Without one, a fragment outside every local
     // volume has no indirect light at all — which is a legitimate scene and a very dark one.
     float remainingWeight = 1.0 - localWeight;
-    if (remainingWeight > 0.0)
+    float remainingRadianceWeight = 1.0 - localRadianceWeight;
+    if (remainingWeight > 0.0 || remainingRadianceWeight > 0.0)
     {
         for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
         {
@@ -578,8 +598,11 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
                 blendedIrradiance[coefficient] += frame.probes[index].irradiance[coefficient] * remainingWeight;
             }
 
-            blendedRadiance += textureLod(probeSpecular, vec4(worldReflection, frame.probes[index].position.w),
-                                          specularLevel).rgb * remainingWeight;
+            if (frame.probes[index].position.w >= 0.0)
+            {
+                blendedRadiance += textureLod(probeSpecular, vec4(worldReflection, frame.probes[index].position.w),
+                                              specularLevel).rgb * remainingRadianceWeight;
+            }
             break;
         }
     }

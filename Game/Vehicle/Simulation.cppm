@@ -124,6 +124,14 @@ public:
         return track;
     }
 
+    // Where the loose props are, for the thread that draws them.
+    //
+    // **Copied under a lock rather than borrowed**, on `SimulatedCar::snapshot`'s own terms: the
+    // world is written by this thread every tick from the moment anything breaks, and a reader
+    // walking Jolt's bodies while it integrates them is the one race this design exists to prevent.
+    // Empty until something breaks, which is most sessions.
+    void freeProps(std::vector<raceengine::PropTransform>& into) const;
+
 private:
     void run(const std::stop_token& stopToken);
     void freeRunning(const std::stop_token& stopToken);
@@ -149,6 +157,17 @@ private:
 
     std::mutex waiting;
     std::condition_variable_any sleeping;
+
+    // The loose props as of the newest tick, and the lock over the handoff. Written by the
+    // simulation thread and read by whoever is drawing — the asymmetry `SimulatedCar` keeps: the
+    // tick publishes under a `try_lock` and never waits, because a dropped publish costs the picture
+    // one tick of freshness and a stalled tick costs a deadline.
+    mutable std::mutex publication;
+    std::vector<raceengine::PropTransform> publishedProps;
+    // Scratch the tick reuses, so a step that breaks nothing allocates nothing.
+    std::vector<raceengine::PropTransform> propScratch;
+    std::vector<std::uint32_t> releaseScratch;
+    std::vector<raceengine::PropVelocity> velocityScratch;
 
     // Last, so it stops and joins before anything it touches on the way down is destroyed.
     std::jthread thread;
@@ -214,6 +233,13 @@ void Simulation::stop()
     thread.join();
 }
 
+void Simulation::freeProps(std::vector<raceengine::PropTransform>& into) const
+{
+    const auto guard = std::lock_guard<std::mutex>(publication);
+
+    into = publishedProps;
+}
+
 void Simulation::step()
 {
     RACEENGINE_ZONE_N("simulation tick");
@@ -221,6 +247,59 @@ void Simulation::step()
     for (auto& car : cars)
     {
         car->tick(tickSeconds);
+    }
+
+    // **The street furniture, and this is the only place in this project where the world is
+    // written.** The order is the whole of it. Each car has just decided, inside its own tick and
+    // before resolving anything, which of the props it is touching have anchors that cannot hold —
+    // and has then resolved the collision against them as real bodies. So what is sitting in the
+    // manifolds is a decision and a velocity: the props to let go of, and what the two-body solve
+    // gave each of them. Both are handed over here, release first because a static body has no
+    // velocity to add to, and only then is the world integrated — so a prop that came free this tick
+    // starts moving on this tick rather than the next.
+    //
+    // **No impulse crosses this seam any more, and that is the fix rather than a tidy-up.** The
+    // impulse a rigid solver computes against a prop that is still bolted down is sized by the
+    // *car's* mass — enough to stop 1400 kg however little the prop weighs — so handing it to a
+    // twenty-kilogram bin launched the bin at about seventy times the car's approach speed.
+    //
+    // Nothing here runs while nothing is loose — `PhysicsWorld::step` returns on a counter, and a
+    // manifold that touched no prop produces nothing to hand over — so a session that never hits
+    // anything pays a branch.
+    releaseScratch.clear();
+    velocityScratch.clear();
+    for (const auto& car : cars)
+    {
+        for (const auto& body : car->contacts().bodies)
+        {
+            if (body.prop == raceengine::noProp)
+            {
+                continue;
+            }
+
+            // The anchor gave way during this tick's solve, so the world has to be told before the
+            // velocity below can land on anything: a static body has no motion properties.
+            if (body.released)
+            {
+                releaseScratch.push_back(body.prop);
+            }
+
+            velocityScratch.push_back(
+                raceengine::PropVelocity{.prop = body.prop, .linear = body.deltaLinear, .angular = body.deltaAngular});
+        }
+    }
+
+    track.releaseProps(releaseScratch);
+    track.applyPropVelocities(velocityScratch);
+    track.step(tickSeconds);
+
+    track.freeProps(propScratch);
+    if (!propScratch.empty())
+    {
+        if (auto held = std::unique_lock<std::mutex>(publication, std::try_to_lock); held.owns_lock())
+        {
+            publishedProps = propScratch;
+        }
     }
 
     // A frame of its own, on its own track. The render frame and this one are different clocks —

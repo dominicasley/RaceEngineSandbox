@@ -157,7 +157,8 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
                                            .cloudMapHeight = options.cloudMapHeight,
                                            .cloudBlendWeight = cloudBlend,
                                            .cloudMarchInterval = options.cloudMarchInterval,
-                                           .cloudMarchStrips = options.cloudMarchStrips});
+                                           .cloudMarchStrips = options.cloudMarchStrips},
+                                    options.occlusionCulling);
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;

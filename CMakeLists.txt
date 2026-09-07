@@ -27,7 +27,11 @@ target_sources(OpenStreetRace PRIVATE
         Game/Scenes/ApronScene.cppm
         Game/Scenes/CircuitScene.cppm
         Game/Scenes/RenderRig.cppm
+        Game/Track/ColliderManifest.cppm
+        Game/Track/Json.cppm
+        Game/Track/ProbeCache.cppm
         Game/Track/RaceTrack.cppm
+        Game/Track/TrafficNetwork.cppm
         Game/Vehicle/PlayerCar.cppm
         Game/Vehicle/SimulatedCar.cppm
         Game/Vehicle/Simulation.cppm
