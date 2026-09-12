@@ -1,13 +1,17 @@
 module;
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <fstream>
 #include <ios>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 export module osr.game:ProbeCache;
@@ -56,6 +60,10 @@ export struct ProbeCacheKey
     double heightMetres = 0.0;
     double minimumSeparationMetres = 0.0;
     std::size_t probeCount = 0;
+    // What the probes photographed, as `probeWorldHash` states it. Added 2026-09-13 after the sky's
+    // air constants changed under a cache that still matched: 213 of the city's 220 probes went on
+    // lighting the streets with the old sky while the seven near spawn and the sky itself were new.
+    std::uint64_t worldHash = 0;
 };
 
 export struct ProbeCache
@@ -71,6 +79,16 @@ export struct ProbeCache
 // tolerance rather than exactly: they come from a command line by way of `std::from_chars`, and a
 // key that only matched a bit-identical reparse would miss on every run.
 export [[nodiscard]] bool probeCacheMatches(const ProbeCacheKey& wanted, const ProbeCacheKey& found);
+
+// A fingerprint of what a probe photographs beyond its sun and its clouds: every shader source in
+// `shaderDirectory` (name and bytes, in name order — the sky's air constants, the ozone term, a
+// material model, all live there) and the scenery asset's size and write time (a re-export). What
+// it deliberately does not cover is the engine's own C++ — the sun's colour restated in
+// `RenderRig.cppm`, the capture's face convention — because keying on the binary would re-bake the
+// city after every build; a lighting change on that side wants the cache file deleted by hand.
+// A directory or file that cannot be read hashes as absent rather than throwing: the cache is a
+// convenience, and a miss is its safe answer.
+export [[nodiscard]] std::uint64_t probeWorldHash(const std::string& shaderDirectory, const std::string& sceneryAsset);
 
 export [[nodiscard]] std::expected<ProbeCache, std::string> loadProbeCache(const std::string& filePath);
 
@@ -91,7 +109,9 @@ constexpr auto probeCacheMagic = std::string_view("OSRPROBE");
 // Bumped whenever the meaning of a coefficient changes — a different basis, a different
 // convolution, a different padding convention. An old file then misses rather than being read as
 // though it were new, which is the difference between a rebuilt cache and a wrongly lit city.
-constexpr auto probeCacheVersion = std::uint32_t{1};
+// 2 since 2026-09-13: the header carries `worldHash`, so every version-1 file is a miss and is
+// rebuilt under the sky that lit the world on that date rather than the one before it.
+constexpr auto probeCacheVersion = std::uint32_t{2};
 
 static_assert(sizeof(float) == 4, "the cache writes raw float32");
 static_assert(sizeof(double) == 8, "the cache writes raw float64");
@@ -111,11 +131,86 @@ template <typename T> [[nodiscard]] bool readRaw(std::ifstream& stream, T& value
     return std::abs(left - right) <= 1e-9;
 }
 
+// FNV-1a, 64 bits: a byte at a time, no table, and good enough to tell two shader sources apart,
+// which is the whole of what is asked of it.
+constexpr auto fnvOffsetBasis = std::uint64_t{14695981039346656037ULL};
+constexpr auto fnvPrime = std::uint64_t{1099511628211ULL};
+
+void hashBytes(std::uint64_t& hash, const char* bytes, const std::size_t count)
+{
+    for (auto index = std::size_t{0}; index < count; index++)
+    {
+        hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[index]));
+        hash *= fnvPrime;
+    }
+}
+
+void hashString(std::uint64_t& hash, const std::string& text)
+{
+    hashBytes(hash, text.data(), text.size());
+}
+
+void hashFileContents(std::uint64_t& hash, const std::filesystem::path& path)
+{
+    auto stream = std::ifstream(path, std::ios::binary);
+    if (!stream.is_open())
+    {
+        hashString(hash, "unreadable");
+        return;
+    }
+
+    auto buffer = std::vector<char>(65536);
+    while (stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || stream.gcount() > 0)
+    {
+        hashBytes(hash, buffer.data(), static_cast<std::size_t>(stream.gcount()));
+    }
+}
+
 } // namespace
+
+std::uint64_t probeWorldHash(const std::string& shaderDirectory, const std::string& sceneryAsset)
+{
+    auto hash = fnvOffsetBasis;
+
+    // The shaders, in name order: a directory listing's order is the file system's and would make
+    // the same directory hash differently on two machines.
+    auto error = std::error_code{};
+    auto shaders = std::vector<std::filesystem::path>();
+    for (const auto& entry : std::filesystem::directory_iterator(shaderDirectory, error))
+    {
+        if (entry.is_regular_file(error) && entry.path().extension() == ".glsl")
+        {
+            shaders.push_back(entry.path());
+        }
+    }
+    std::sort(shaders.begin(), shaders.end());
+
+    for (const auto& shader : shaders)
+    {
+        hashString(hash, shader.filename().string());
+        hashFileContents(hash, shader);
+    }
+
+    // The scenery by size and write time rather than by bytes: it is hundreds of megabytes, and a
+    // re-export changes both.
+    auto sizeError = std::error_code{};
+    auto writtenError = std::error_code{};
+    const auto size = std::filesystem::file_size(sceneryAsset, sizeError);
+    const auto written = std::filesystem::last_write_time(sceneryAsset, writtenError);
+    const auto sizeValue = sizeError ? std::uint64_t{0} : static_cast<std::uint64_t>(size);
+    const auto writtenValue =
+        writtenError ? std::int64_t{0} : static_cast<std::int64_t>(written.time_since_epoch().count());
+    hashString(hash, sceneryAsset);
+    hashBytes(hash, reinterpret_cast<const char*>(&sizeValue), sizeof(sizeValue));
+    hashBytes(hash, reinterpret_cast<const char*>(&writtenValue), sizeof(writtenValue));
+
+    return hash;
+}
 
 bool probeCacheMatches(const ProbeCacheKey& wanted, const ProbeCacheKey& found)
 {
     return wanted.track == found.track && wanted.probeCount == found.probeCount &&
+           wanted.worldHash == found.worldHash &&
            closeEnough(wanted.sunElevationDegrees, found.sunElevationDegrees) &&
            closeEnough(wanted.cloudCoverage, found.cloudCoverage) && closeEnough(wanted.spacingMetres, found.spacingMetres) &&
            closeEnough(wanted.heightMetres, found.heightMetres) &&
@@ -160,7 +255,8 @@ std::expected<ProbeCache, std::string> loadProbeCache(const std::string& filePat
     auto probeCount = std::uint32_t{0};
     if (!readRaw(stream, cache.key.sunElevationDegrees) || !readRaw(stream, cache.key.cloudCoverage) ||
         !readRaw(stream, cache.key.spacingMetres) || !readRaw(stream, cache.key.heightMetres) ||
-        !readRaw(stream, cache.key.minimumSeparationMetres) || !readRaw(stream, probeCount))
+        !readRaw(stream, cache.key.minimumSeparationMetres) || !readRaw(stream, cache.key.worldHash) ||
+        !readRaw(stream, probeCount))
     {
         return std::unexpected("probe cache " + filePath + " ends inside its header");
     }
@@ -208,6 +304,7 @@ std::expected<void, std::string> saveProbeCache(const std::string& filePath, con
     writeRaw(stream, cache.key.spacingMetres);
     writeRaw(stream, cache.key.heightMetres);
     writeRaw(stream, cache.key.minimumSeparationMetres);
+    writeRaw(stream, cache.key.worldHash);
     writeRaw(stream, static_cast<std::uint32_t>(cache.key.probeCount));
     stream.write(reinterpret_cast<const char*>(cache.coefficients.data()),
                  static_cast<std::streamsize>(cache.coefficients.size() * sizeof(float)));

@@ -62,19 +62,51 @@ namespace osr
 // lights, dealt each frame to the nearest patrol cars with their bars on and stood on the lit side
 // of each bar, switched off between flashes so an empty street uploads the sun alone.
 
-// What the fleet is painted, for the cars that take a colour. Ten plausible road-car colours,
-// linearised and pulled a little under the raw conversion for the reason the player's own paint is:
-// a base coat at the sRGB value's face reads brighter than any real pigment reflects.
-export inline constexpr auto trafficPalette = std::array<glm::vec3, 10>{glm::vec3(0.55f, 0.55f, 0.57f),
-                                                                        glm::vec3(0.02f, 0.02f, 0.03f),
-                                                                        glm::vec3(0.70f, 0.70f, 0.72f),
-                                                                        glm::vec3(0.13f, 0.16f, 0.24f),
-                                                                        glm::vec3(0.26f, 0.05f, 0.06f),
-                                                                        glm::vec3(0.06f, 0.14f, 0.10f),
-                                                                        glm::vec3(0.30f, 0.31f, 0.33f),
-                                                                        glm::vec3(0.09f, 0.13f, 0.28f),
-                                                                        glm::vec3(0.42f, 0.30f, 0.14f),
-                                                                        glm::vec3(0.60f, 0.28f, 0.05f)};
+// What the fleet is painted, for the cars that take a colour: **a pool of real factory colours**,
+// named off the ranges of the four marques that are actually on this street — Holden Commodore, Kia
+// Carnival, Subaru Legacy, Toyota Hilux (2026-09-13, Dominic's ask; the ten before it were plausible
+// road-car colours nobody sold). The comment carries the paint chip as sRGB and the value is that
+// chip linearised and pulled to 0.8 of it, for the reason the player's own paint is
+// (CarEntity.cppm): a base coat at the sRGB value's face reads brighter than any real pigment
+// reflects.
+//
+// Three things about it are decisions rather than data.
+//
+// **The pool is shared by every body shape.** An agent's colour is one index drawn against one count
+// (`TrafficPopulationOptions::colourCount`) and its shape is a separate index, so a Hilux can wear a
+// Kia colour. Giving each shape its own range means interpreting the index per shape, which is an
+// engine-side change for a thing nobody reads at ten metres.
+//
+// **The draw is uniform, so the street's mix is this pool's composition**: twelve of the eighteen are
+// a white, a black, a grey or a silver, which is about the neutral share of a real registration year.
+// Adding a colour here adds its share to the street.
+//
+// **No two entries differ only by flake**, because traffic paint states none (`flakeDensity` is zero
+// below): four marques' blacks would be four copies of one colour. Where a family appears more than
+// once the entries differ in hue or in value — a pure white, a warm pearl, a cool pearl and a solid;
+// a neutral black and a blue-black.
+//
+// The factory paint codes are deliberately not here. Only some of them are verifiable from where
+// this was written, and a code this project cannot check is worse than a name.
+export inline constexpr auto trafficPalette = std::array<glm::vec3, 18>{
+    glm::vec3(0.717f, 0.724f, 0.710f),  // #F3F4F2  Toyota Super White
+    glm::vec3(0.710f, 0.691f, 0.652f),  // #F2EFE9  Kia Snow White Pearl
+    glm::vec3(0.684f, 0.697f, 0.704f),  // #EEF0F1  Subaru Crystal White Pearl
+    glm::vec3(0.677f, 0.677f, 0.646f),  // #EDEDE8  Holden Heron White
+    glm::vec3(0.019f, 0.020f, 0.020f),  // #2B2C2C  Toyota Attitude Black Mica
+    glm::vec3(0.016f, 0.019f, 0.025f),  // #262A31  Subaru Crystal Black Silica
+    glm::vec3(0.467f, 0.488f, 0.494f),  // #C9CDCE  Toyota Silver Metallic
+    glm::vec3(0.343f, 0.365f, 0.379f),  // #AFB4B7  Kia Silky Silver
+    glm::vec3(0.216f, 0.230f, 0.240f),  // #8E9295  Toyota Grey Metallic
+    glm::vec3(0.127f, 0.137f, 0.148f),  // #6F7377  Kia Panthera Metal
+    glm::vec3(0.096f, 0.120f, 0.150f),  // #616C78  Holden Prussian Steel
+    glm::vec3(0.074f, 0.082f, 0.092f),  // #565A5F  Subaru Magnetite Grey Metallic
+    glm::vec3(0.023f, 0.069f, 0.227f),  // #2F5391  Holden Perfect Blue
+    glm::vec3(0.014f, 0.048f, 0.125f),  // #24456E  Kia Deep Chroma Blue
+    glm::vec3(0.009f, 0.019f, 0.048f),  // #1B2B45  Subaru Abyss Blue Pearl
+    glm::vec3(0.427f, 0.007f, 0.009f),  // #C1171C  Holden Red Hot
+    glm::vec3(0.248f, 0.006f, 0.008f),  // #97141A  Toyota Emotional Red
+    glm::vec3(0.078f, 0.050f, 0.041f)}; // #584740  Toyota Phantom Brown
 
 export class TrafficCars
 {
@@ -576,7 +608,8 @@ void TrafficCars::show(Slot& slot, const TrafficSnapshot& snapshot, const std::s
                                          .flakeDensity = 0.0f,
                                          .clearcoat = 1.0f,
                                          .clearcoatRoughness = 0.06f,
-                                         .orangePeel = 0.35f,
+                                         // Off, as on the player's car (CarEntity.cppm, 2026-09-13).
+                                         .orangePeel = 0.0f,
                                          .orangePeelScale = 30.0f};
 
     for (auto* renderable : slot.levels)

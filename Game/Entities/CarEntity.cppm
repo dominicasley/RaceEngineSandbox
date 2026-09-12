@@ -59,15 +59,16 @@ public:
         // metallic, and dialling flake into it would make it a colour Volkswagen never sold.
         //
         // The lacquer over the top is what makes it a car rather than a yellow object — a sharp
-        // second highlight on a Fresnel of 0.04 — and a little orange peel, because a sprayed and
-        // baked panel never comes out dead flat and the absence of it is one of the things that reads
-        // as "rendered".
+        // second highlight on a Fresnel of 0.04. **No orange peel** (2026-09-13, from the seat: "a
+        // strange stipple ... makes the cars look bumpy"): the term bends the coat's normal with
+        // 3.3 cm and 1.2 cm ripples at slopes up to ~2.6°, which is the geometry of dents, where a
+        // real lacquer's peel is 0.1–12 mm and a fraction of a degree — under a pixel at any distance.
         created.paint = raceengine::Paint{.enabled = true,
                                           .colour = glm::vec3(0.75f, 0.47f, 0.02f),
                                           .flakeDensity = 0.0f,
                                           .clearcoat = 1.0f,
                                           .clearcoatRoughness = 0.04f,
-                                          .orangePeel = 0.35f,
+                                          .orangePeel = 0.0f,
                                           .orangePeelScale = 30.0f};
 
         const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, created);

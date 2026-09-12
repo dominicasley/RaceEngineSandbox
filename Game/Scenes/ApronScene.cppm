@@ -151,6 +151,7 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
                                     RigAir{.baseHeight = 0.0f,
                                            .densityScale = static_cast<float>(options.fogDensityScale),
                                            .skyEyeStops = static_cast<float>(options.skyEyeStops),
+                                           .probeDistanceMarch = options.probeDistanceMarch,
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
                                            .rain = static_cast<float>(options.rainIntensity),
                                            .clouds = static_cast<float>(options.cloudCoverage),

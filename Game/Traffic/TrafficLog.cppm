@@ -1,17 +1,14 @@
 module;
 
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
-#include <mutex>
-#include <stop_token>
 #include <string>
-#include <thread>
-#include <utility>
+#include <string_view>
 
 export module osr.game:TrafficLog;
+
+import :DiagnosticLog;
 
 namespace osr
 {
@@ -25,9 +22,8 @@ namespace osr
 // same file on the periodic ticks. The file is CSV with one header line; the comment line under it
 // says what the two special row kinds carry in the car columns.
 //
-// Written by a thread of its own: the simulation thread only formats into a string and hands the
-// block over once a tick under a mutex held for a swap, so a write to disk never lands inside a
-// 360 Hz tick. Imports nothing, so the headers above cost this unit nothing to merge.
+// Written by a thread of its own (`DiagnosticLog`): the simulation thread only formats into a string
+// and hands the block over once a tick.
 
 export struct TrafficLogRow
 {
@@ -64,12 +60,6 @@ export class TrafficLog
 {
 public:
     explicit TrafficLog(const std::string& path);
-    ~TrafficLog();
-
-    TrafficLog(const TrafficLog&) = delete;
-    TrafficLog(TrafficLog&&) = delete;
-    TrafficLog& operator=(const TrafficLog&) = delete;
-    TrafficLog& operator=(TrafficLog&&) = delete;
 
     [[nodiscard]] bool open() const;
 
@@ -78,17 +68,7 @@ public:
     void flush();
 
 private:
-    void run(std::stop_token stop);
-
-    std::ofstream file;
-    // The tick's block, the simulation thread's alone.
-    std::string pending;
-    // The blocks handed over and not yet written, under the mutex.
-    std::mutex handover;
-    std::condition_variable_any wake;
-    std::string queued;
-    // Last, so it is joined before anything above is destroyed.
-    std::jthread writer;
+    DiagnosticLog file;
 };
 
 } // namespace osr
@@ -96,40 +76,31 @@ private:
 namespace osr
 {
 
-TrafficLog::TrafficLog(const std::string& path) : file(path, std::ios::out | std::ios::trunc)
+namespace
 {
-    if (!file)
-    {
-        return;
-    }
 
-    file << "tick,kind,id,mode,lane,dist,target,progress,slot,lag,still,disturbed,x,y,z,vx,vy,vz,fx,fy,fz,jump,"
-            "police,siren\n";
-    file << "# kind p: the player -- x y z its position, vx vy vz its velocity, fx fy fz its forward. kind r: the "
-            "population's report -- lane=cruising dist=embodied target=disturbed progress=stopped slot=pursuing "
-            "lag=external still=recycled disturbed=refused x=heldAsPoints y=dropped z=promoted. kind x: the city "
-            "was reseeded on this tick.\n";
+constexpr auto trafficLogHeader = std::string_view(
+    "tick,kind,id,mode,lane,dist,target,progress,slot,lag,still,disturbed,x,y,z,vx,vy,vz,fx,fy,fz,jump,"
+    "police,siren\n"
+    "# kind p: the player -- x y z its position, vx vy vz its velocity, fx fy fz its forward. kind r: the "
+    "population's report -- lane=cruising dist=embodied target=disturbed progress=stopped slot=pursuing "
+    "lag=external still=recycled disturbed=refused x=heldAsPoints y=dropped z=promoted. kind x: the city "
+    "was reseeded on this tick.\n");
 
-    pending.reserve(1 << 16);
-    writer = std::jthread([this](std::stop_token stop) { run(stop); });
-}
+} // namespace
 
-TrafficLog::~TrafficLog()
+TrafficLog::TrafficLog(const std::string& path) : file(path, trafficLogHeader)
 {
-    flush();
-    writer.request_stop();
-    wake.notify_all();
-    // The jthread joins itself; the writer drains what is queued before it stops.
 }
 
 bool TrafficLog::open() const
 {
-    return file.is_open();
+    return file.open();
 }
 
 void TrafficLog::row(const TrafficLogRow& entry)
 {
-    if (!file.is_open())
+    if (!file.open())
     {
         return;
     }
@@ -146,54 +117,14 @@ void TrafficLog::row(const TrafficLogRow& entry)
 
     if (written > 0)
     {
-        pending.append(line, static_cast<std::size_t>(written) < sizeof line ? static_cast<std::size_t>(written)
-                                                                              : sizeof line - 1);
+        file.line(std::string_view(line, static_cast<std::size_t>(written) < sizeof line
+                                             ? static_cast<std::size_t>(written)
+                                             : sizeof line - 1));
     }
 }
 
 void TrafficLog::flush()
 {
-    if (pending.empty())
-    {
-        return;
-    }
-
-    {
-        const auto guard = std::lock_guard<std::mutex>(handover);
-        queued += pending;
-    }
-
-    pending.clear();
-    wake.notify_one();
-}
-
-void TrafficLog::run(const std::stop_token stop)
-{
-    auto block = std::string();
-
-    for (;;)
-    {
-        {
-            auto lock = std::unique_lock<std::mutex>(handover);
-            wake.wait(lock, stop, [&] { return !queued.empty(); });
-            block.swap(queued);
-        }
-
-        if (!block.empty())
-        {
-            file.write(block.data(), static_cast<std::streamsize>(block.size()));
-            block.clear();
-
-            continue;
-        }
-
-        // Woken with nothing queued: only a stop does that, and the queue was drained above.
-        if (stop.stop_requested())
-        {
-            break;
-        }
-    }
-
     file.flush();
 }
 

@@ -244,7 +244,7 @@ const float cloudPowderStrength = 0.85;
 // Where the map DOES start costing is 0.63-1.27 (75% kept) and 1.27-2.54 (43%), so the erosion's
 // finest 750-unit feature is carried honestly to about 7 km and is marginal past 12. The fade now
 // stands there instead of at three: it is the map's Nyquist expressed as a distance, which is what
-// it was always meant to be, sized off a measurement rather than off the stipple it was reacting
+// it was always meant to be, sized off a measurement rather than off the rstipple it was reacting
 // to. A finer noise octave was measured too and is worth nothing — 0.45% against 0.44% — because
 // this ceiling is the map's, not the volume's.
 const float cloudDetailFadeStart = 60000.0;

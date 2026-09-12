@@ -70,6 +70,7 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
 // chain is the roughness axis. One image rather than one per probe is what lets the loop below
 // pick a probe with a dynamic index.
 layout(set = SET_FRAME, binding = PROBE_SPECULAR_BINDING) uniform samplerCubeArray probeSpecular;
+layout(set = SET_FRAME, binding = PROBE_DISTANCE_BINDING) uniform samplerCubeArray probeDistance;
 
 // textureTransform is a 3x3 UV transform in a mat4 slot: std140 pads a mat3's columns to 16
 // bytes each, which the C++ glm::mat3 does not, so the ABI carries it as a mat4.
@@ -646,16 +647,31 @@ float probeWeight(int index, vec3 worldPosition)
     return ramp.x * ramp.y * ramp.z;
 }
 
-// Re-aims the reflection vector at the point it actually leaves the influence box.
+// Re-aims the reflection vector at the surface it actually hits, as seen from the capture point.
 //
 // A cube map is a record of the world as seen from one point, so reading it along the raw
 // reflection vector places every reflected feature at infinity: a wall two metres away reflects as
 // though it were on the horizon, and the reflection slides across a surface as the camera moves
-// instead of staying pinned to the wall. Intersecting the box and re-aiming from the capture point
-// is the standard correction, and the box is the one the probe already carries.
+// instead of staying pinned to the wall. Two corrections live here and probeParams.y chooses:
 //
-// A reflection vector with a zero component divides to infinity here, which the min/max chain
-// discards on its own — the axis that cannot be crossed is the axis that never bounds the ray.
+// - **The distance cube** (2026-09-13, docs/probe-parallax-brief.md): the capture wrote, beside the
+//   radiance, the distance from the capture point to the first surface along every direction. The
+//   reflection ray is marched from the fragment in geometric steps; a sample is *outside* while its
+//   radius from the capture point is under the cube's distance along it, and the first sample
+//   inside after one outside brackets the hit, which five bisections then place. Only a crossing
+//   from outside counts: a fragment on the road sits on a surface the cube holds, and a 128-texel
+//   face quantises that surface's distance by metres at grazing angles, so the first sample can
+//   read inside for no reason. No hit within reach is the sky, which genuinely is at infinity.
+// - **The influence box**, which every reflection was corrected against until then: the ray is
+//   intersected with the box the probe carries, whose walls stand where no street's do. A
+//   reflection vector with a zero component divides to infinity there, which the min/max chain
+//   discards on its own — the axis that cannot be crossed is the axis that never bounds the ray.
+const int probeMarchSteps = 12;
+const int probeMarchRefinements = 5;
+// World units, a tenth of a metre: the first sample half a metre out, the last 150 m.
+const float probeMarchStart = 5.0;
+const float probeMarchReach = 1500.0;
+
 vec3 parallaxCorrect(int index, vec3 worldPosition, vec3 reflection)
 {
     if (frame.probes[index].boxMax.w != 0.0)
@@ -664,13 +680,60 @@ vec3 parallaxCorrect(int index, vec3 worldPosition, vec3 reflection)
         return reflection;
     }
 
-    vec3 inverseDirection = 1.0 / reflection;
-    vec3 toMaximum = (frame.probes[index].boxMax.xyz - worldPosition) * inverseDirection;
-    vec3 toMinimum = (frame.probes[index].boxMin.xyz - worldPosition) * inverseDirection;
-    vec3 furthest = max(toMaximum, toMinimum);
-    float distance = min(min(furthest.x, furthest.y), furthest.z);
+    vec3 centre = frame.probes[index].position.xyz;
 
-    return normalize((worldPosition + reflection * distance) - frame.probes[index].position.xyz);
+    if (frame.probeParams.y == 0)
+    {
+        vec3 inverseDirection = 1.0 / reflection;
+        vec3 toMaximum = (frame.probes[index].boxMax.xyz - worldPosition) * inverseDirection;
+        vec3 toMinimum = (frame.probes[index].boxMin.xyz - worldPosition) * inverseDirection;
+        vec3 furthest = max(toMaximum, toMinimum);
+        float distance = min(min(furthest.x, furthest.y), furthest.z);
+
+        return normalize((worldPosition + reflection * distance) - centre);
+    }
+
+    float slice = frame.probes[index].position.w;
+    float growth = pow(probeMarchReach / probeMarchStart, 1.0 / float(probeMarchSteps - 1));
+    float t = probeMarchStart;
+    float lastOutside = 0.0;
+    bool wasOutside = false;
+
+    for (int step = 0; step < probeMarchSteps; step++)
+    {
+        vec3 offset = worldPosition + reflection * t - centre;
+        float surface = textureLod(probeDistance, vec4(offset, slice), 0.0).r;
+
+        if (length(offset) < surface)
+        {
+            wasOutside = true;
+            lastOutside = t;
+        }
+        else if (wasOutside)
+        {
+            float low = lastOutside;
+            float high = t;
+            for (int refinement = 0; refinement < probeMarchRefinements; refinement++)
+            {
+                float mid = 0.5 * (low + high);
+                vec3 midOffset = worldPosition + reflection * mid - centre;
+                if (length(midOffset) < textureLod(probeDistance, vec4(midOffset, slice), 0.0).r)
+                {
+                    low = mid;
+                }
+                else
+                {
+                    high = mid;
+                }
+            }
+
+            return normalize(worldPosition + reflection * high - centre);
+        }
+
+        t *= growth;
+    }
+
+    return reflection;
 }
 
 // The split-sum approximation's second half — the environment BRDF — as Lazarov's analytic fit

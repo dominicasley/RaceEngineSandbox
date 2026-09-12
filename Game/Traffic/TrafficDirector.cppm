@@ -18,6 +18,7 @@ module;
 export module osr.game:TrafficDirector;
 
 import :PoliceCar;
+import :PoliceLog;
 import :TrafficLog;
 import :TrafficNetwork;
 
@@ -90,7 +91,9 @@ export struct TrafficSettings
     double embodyRadiusMetres = 0.0;
     double disembodyRadiusMetres = 0.0;
 
-    // How many body shapes and how many paint colours the renderer has.
+    // How many body shapes and how many paint colours the renderer has. The scene states both from
+    // what it actually owns — the track's fleet and `trafficPalette` — so these two are a default for
+    // a caller that states neither and not the size of either pool.
     std::uint8_t bodyCount = 1;
     std::uint8_t colourCount = 10;
 
@@ -111,6 +114,9 @@ export struct TrafficSettings
     // 30 Hz and on every tick something about it changes. Empty is off, which is every run that did
     // not ask for it.
     std::string logPath;
+    // The police position log, `OSR_POLICE_LOG=<file>` (PoliceLog.cppm): every unit in a chase, its
+    // pose and the director's decisions for it, at 30 Hz and on every tick a flag changes. Empty is off.
+    std::string policeLogPath;
 
     std::uint64_t seed = 0x9E3779B97F4A7C15ULL;
 };
@@ -225,6 +231,31 @@ private:
     glm::dvec3 logPlayerVelocity{0.0};
     glm::dvec3 logPlayerForward{0.0};
     bool logRestart = false;
+
+    // The police position log (`OSR_POLICE_LOG`, PoliceLog.cppm), and what each unit last logged, so
+    // a row is written on the tick its role, a flag or its aim changes and not only on the periodic
+    // tick. Indexed by agent id; `present` is whether the unit was in the roster on this tick.
+    struct PoliceLogMemory
+    {
+        bool seen = false;
+        bool present = false;
+        raceengine::PursuitRole role = raceengine::PursuitRole::Chase;
+        std::uint32_t flags = 0;
+        int turnPhase = 0;
+        int turnSide = 0;
+        int routeKind = 0;
+        glm::dvec3 positionMetres{0.0};
+        glm::dvec3 aimMetres{0.0};
+    };
+    void writePoliceLog(const PlayerFrame& player);
+    std::optional<PoliceLog> policeLog;
+    std::vector<PoliceLogMemory> policeLogMemory;
+    bool policeLogRestart = false;
+    bool policeLogActive = false;
+    int policeLogLevel = 0;
+    bool policeLogSearching = false;
+    // The driver's demand for each full model on this tick, by agent id, for the log alone.
+    std::vector<raceengine::PursuitDrive> policeDrives;
 
     // --- the police (docs/police-pursuit-brief.md) -----------------------------------------------
     // The ground the pursuit routes over, held for the life of the track; the road stays the lanes.
@@ -452,6 +483,14 @@ TrafficDirector::TrafficDirector(raceengine::Engine& engine, const TrafficNetwor
                           trafficLog->open() ? "every car at 30 Hz and on every change, to" : "could not open",
                           settings.logPath);
     }
+
+    if (!settings.policeLogPath.empty())
+    {
+        policeLog.emplace(settings.policeLogPath);
+        engine.log().info("Police log: {} {}",
+                          policeLog->open() ? "every unit at 30 Hz and on every change, to" : "could not open",
+                          settings.policeLogPath);
+    }
 }
 
 void TrafficDirector::tick(const double deltaTime, const double simulatedSeconds, const glm::dvec3& focusMetres,
@@ -537,6 +576,11 @@ void TrafficDirector::tick(const double deltaTime, const double simulatedSeconds
     manageFullModels(world);
     stepFullModels(deltaTime, *player, world);
     reportChase();
+
+    if (policeLog)
+    {
+        writePoliceLog(*player);
+    }
 }
 
 PoliceCar* TrafficDirector::fullModel(const std::uint32_t id)
@@ -640,6 +684,16 @@ void TrafficDirector::stepFullModels(const double deltaTime, const PlayerFrame& 
 
         const auto drive = pursuitDirector.drive(*unit, car.pursuitPose());
         const auto origin = car.pose().originMetres;
+
+        if (policeLog)
+        {
+            if (policeDrives.size() <= id)
+            {
+                policeDrives.resize(static_cast<std::size_t>(id) + 1);
+            }
+
+            policeDrives[id] = drive;
+        }
 
         policeObstacles.clear();
         population->obstaclesNear(origin, settings.obstacleRadiusMetres, policeObstacles);
@@ -872,6 +926,7 @@ void TrafficDirector::restart()
     population->seed();
     nudges.clear();
     logRestart = true;
+    policeLogRestart = true;
 
     reportedActive = false;
     reportedLevel = 0;
@@ -1092,6 +1147,237 @@ void TrafficDirector::writeLog()
     }
 
     trafficLog->flush();
+}
+
+// The police position log, at the end of the tick: after the director's update and every full
+// model's step, which is the state the next tick starts from. A row per unit on every twelfth tick,
+// and on any tick its role, a flag, its turn state or its route's kind changed, its aim moved
+// more than a metre, or it moved more than a metre itself; one last row for a unit that left the
+// chase; the player on the periodic ticks; the status on the periodic ticks and on its transitions;
+// a marker on a restart.
+void TrafficDirector::writePoliceLog(const PlayerFrame& player)
+{
+    const auto agents = population->agents();
+    const auto& status = pursuitDirector.status();
+    const auto periodic = tickIndex % 12 == 0;
+
+    if (policeLogMemory.size() != agents.size())
+    {
+        policeLogMemory.assign(agents.size(), PoliceLogMemory{});
+    }
+
+    if (policeLogRestart)
+    {
+        policeLogRestart = false;
+        policeLog->row(PoliceLogRow{.tick = tickIndex, .kind = 'x', .role = "Restart"});
+
+        for (auto& memory : policeLogMemory)
+        {
+            memory = PoliceLogMemory{};
+        }
+    }
+
+    for (auto& memory : policeLogMemory)
+    {
+        memory.present = false;
+    }
+
+    for (const auto& unit : pursuitDirector.units())
+    {
+        if (unit.agent >= agents.size())
+        {
+            continue;
+        }
+
+        const auto& agent = agents[unit.agent];
+        auto& memory = policeLogMemory[unit.agent];
+
+        const auto flags = (unit.fullModel ? 1u : 0u) | (unit.sighted ? 2u : 0u) | (unit.nearPlayer ? 4u : 0u) |
+                           (unit.searching ? 8u : 0u) | (unit.routing ? 16u : 0u) | (unit.routePending ? 32u : 0u) |
+                           (unit.reversing ? 64u : 0u) | (unit.reversingToStation ? 128u : 0u) |
+                           (unit.ramming ? 512u : 0u) | (unit.blocking ? 1024u : 0u) |
+                           (unit.laneShifting ? 2048u : 0u) | (unit.lineClear ? 4096u : 0u) |
+                           (unit.corridorHit ? 8192u : 0u) | (unit.corridorBlocked ? 16384u : 0u) |
+                           (unit.trafficAhead ? 32768u : 0u);
+        const auto routeKind = unit.route.blocked ? 3 : unit.route.direct ? 2 : unit.route.found ? 1 : 0;
+
+        const auto jump = memory.seen ? glm::distance(agent.positionMetres, memory.positionMetres) : 0.0;
+        const auto aimMoved = memory.seen ? glm::distance(unit.aimMetres, memory.aimMetres) : 0.0;
+        const auto changed = memory.seen && (unit.role != memory.role || flags != memory.flags ||
+                                             unit.turnPhase != memory.turnPhase || unit.turnSide != memory.turnSide ||
+                                             routeKind != memory.routeKind ||
+                                             jump > 1.0 || aimMoved > 1.0);
+
+        if (periodic || changed || !memory.seen)
+        {
+            const auto* drive =
+                unit.fullModel && unit.agent < policeDrives.size() ? &policeDrives[unit.agent] : nullptr;
+
+            policeLog->row(PoliceLogRow{.tick = tickIndex,
+                                        .kind = changed ? 'e' : 'u',
+                                        .id = static_cast<std::int32_t>(unit.agent),
+                                        .role = raceengine::pursuitRoleName(unit.role),
+                                        .mode = modeName(agent.mode),
+                                        .full = unit.fullModel ? 1 : 0,
+                                        .sighted = unit.sighted ? 1 : 0,
+                                        .nearPlayer = unit.nearPlayer ? 1 : 0,
+                                        .searching = unit.searching ? 1 : 0,
+                                        .routing = unit.routing ? 1 : 0,
+                                        .routeKind = routeKind,
+                                        .routePending = unit.routePending ? 1 : 0,
+                                        .reversing = unit.reversing ? 1 : 0,
+                                        .toStation = unit.reversingToStation ? 1 : 0,
+                                        .ramming = unit.ramming ? 1 : 0,
+                                        .blocking = unit.blocking ? 1 : 0,
+                                        .turnPhase = unit.turnPhase,
+                                        .turnSide = unit.turnSide,
+                                        .shifting = unit.laneShifting ? 1 : 0,
+                                        .shiftSide = unit.laneShiftSide,
+                                        .shiftAppliedMetres = unit.laneShiftAppliedMetres,
+                                        .lineClear = unit.lineClear ? 1 : 0,
+                                        .corridorHit = unit.corridorHit ? 1 : 0,
+                                        .corridorBlocked = unit.corridorBlocked ? 1 : 0,
+                                        .trafficAhead = unit.trafficAhead ? 1 : 0,
+                                        .x = agent.positionMetres.x,
+                                        .y = agent.positionMetres.y,
+                                        .z = agent.positionMetres.z,
+                                        .vx = agent.velocityMetresPerSecond.x,
+                                        .vy = agent.velocityMetresPerSecond.y,
+                                        .vz = agent.velocityMetresPerSecond.z,
+                                        .fx = agent.heading.x,
+                                        .fy = agent.heading.y,
+                                        .fz = agent.heading.z,
+                                        .ax = unit.aimMetres.x,
+                                        .ay = unit.aimMetres.y,
+                                        .az = unit.aimMetres.z,
+                                        .sx = unit.stationMetres.x,
+                                        .sy = unit.stationMetres.y,
+                                        .sz = unit.stationMetres.z,
+                                        .gx = unit.goalMetres.x,
+                                        .gy = unit.goalMetres.y,
+                                        .gz = unit.goalMetres.z,
+                                        .bx = unit.blockPointMetres.x,
+                                        .by = unit.blockPointMetres.y,
+                                        .bz = unit.blockPointMetres.z,
+                                        .wantedMetresPerSecond = unit.wantedSpeedMetresPerSecond,
+                                        .capMetresPerSecond = unit.corridorCapMetresPerSecond,
+                                        .speedMetresPerSecond = glm::length(agent.velocityMetresPerSecond),
+                                        .distanceMetres = unit.distanceMetres,
+                                        .damage = unit.damage,
+                                        .stuckSeconds = unit.stuckSeconds,
+                                        .routeLengthMetres = unit.route.lengthMetres,
+                                        .routeAtMetres = unit.routeDistanceMetres,
+                                        .routeAgeSeconds = unit.routeAgeSeconds,
+                                        .curvatureAhead = unit.curvatureAhead,
+                                        .trafficGapMetres = unit.trafficGapMetres,
+                                        .trafficSpeedMetresPerSecond = unit.trafficSpeedMetresPerSecond,
+                                        .corridorReachMetres = unit.corridorReachMetres,
+                                        .corridorHitMetres = unit.corridorHitMetres,
+                                        .roomLeftMetres = unit.roomLeftMetres,
+                                        .roomRightMetres = unit.roomRightMetres,
+                                        .steering = drive != nullptr ? drive->steering : 0.0,
+                                        .throttle = drive != nullptr ? drive->throttle : 0.0,
+                                        .brake = drive != nullptr ? drive->brake : 0.0,
+                                        .reverseGear = drive != nullptr && drive->reverse ? 1 : 0,
+                                        .jumpMetres = jump});
+        }
+
+        memory = PoliceLogMemory{.seen = true,
+                                 .present = true,
+                                 .role = unit.role,
+                                 .flags = flags,
+                                 .turnPhase = unit.turnPhase,
+                                 .turnSide = unit.turnSide,
+                                 .routeKind = routeKind,
+                                 .positionMetres = agent.positionMetres,
+                                 .aimMetres = unit.aimMetres};
+    }
+
+    for (auto index = std::size_t{0}; index < policeLogMemory.size(); index++)
+    {
+        auto& memory = policeLogMemory[index];
+        if (!memory.seen || memory.present)
+        {
+            continue;
+        }
+
+        policeLog->row(PoliceLogRow{.tick = tickIndex,
+                                    .kind = 'l',
+                                    .id = static_cast<std::int32_t>(index),
+                                    .role = raceengine::pursuitRoleName(memory.role),
+                                    .x = memory.positionMetres.x,
+                                    .y = memory.positionMetres.y,
+                                    .z = memory.positionMetres.z});
+        memory = PoliceLogMemory{};
+    }
+
+    if (periodic)
+    {
+        const auto& me = player.player;
+        policeLog->row(PoliceLogRow{.tick = tickIndex,
+                                    .kind = 'p',
+                                    .role = "Player",
+                                    .x = me.positionMetres.x,
+                                    .y = me.positionMetres.y,
+                                    .z = me.positionMetres.z,
+                                    .vx = me.velocityMetresPerSecond.x,
+                                    .vy = me.velocityMetresPerSecond.y,
+                                    .vz = me.velocityMetresPerSecond.z,
+                                    .fx = me.forward.x,
+                                    .fy = me.forward.y,
+                                    .fz = me.forward.z,
+                                    .speedMetresPerSecond = glm::length(me.velocityMetresPerSecond)});
+    }
+
+    const auto statusChanged = status.active != policeLogActive || status.level != policeLogLevel ||
+                               status.searching != policeLogSearching;
+    if (periodic || statusChanged)
+    {
+        const auto count = [](const std::size_t value) { return static_cast<std::int32_t>(value); };
+
+        policeLog->row(PoliceLogRow{.tick = tickIndex,
+                                    .kind = 's',
+                                    .id = count(status.units),
+                                    .role = "Status",
+                                    .mode = raceengine::offenceName(status.offence),
+                                    .full = status.active ? 1 : 0,
+                                    .sighted = status.observed ? 1 : 0,
+                                    .nearPlayer = count(status.nearUnits),
+                                    .searching = count(status.searchingUnits),
+                                    .routing = count(status.routingUnits),
+                                    .routeKind = status.level,
+                                    .routePending = count(status.routesPending),
+                                    .reversing = status.swarm ? 1 : 0,
+                                    .toStation = status.busted ? 1 : 0,
+                                    .ramming = status.searching ? 1 : 0,
+                                    .blocking = count(status.broadcasts),
+                                    .turnPhase = count(status.fullModels),
+                                    .shifting = status.wrecked ? 1 : 0,
+                                    .shiftSide = count(status.sightedUnits),
+                                    .x = status.broadcastMetres.x,
+                                    .y = status.broadcastMetres.y,
+                                    .z = status.broadcastMetres.z,
+                                    .ax = status.searchCentreMetres.x,
+                                    .ay = status.searchCentreMetres.y,
+                                    .az = status.searchCentreMetres.z,
+                                    .sx = status.nearestUnitMetresPosition.x,
+                                    .sy = status.nearestUnitMetresPosition.y,
+                                    .sz = status.nearestUnitMetresPosition.z,
+                                    .wantedMetresPerSecond = status.felony,
+                                    .capMetresPerSecond = status.searchRadiusMetres,
+                                    .speedMetresPerSecond = status.reportAgeSeconds,
+                                    .distanceMetres = status.nearestUnitMetres,
+                                    .damage = status.playerDamage,
+                                    .stuckSeconds = status.unobservedSeconds,
+                                    .routeLengthMetres = status.searchSeconds,
+                                    .routeAtMetres = status.overspeedMetresPerSecond});
+    }
+
+    policeLogActive = status.active;
+    policeLogLevel = status.level;
+    policeLogSearching = status.searching;
+
+    policeLog->flush();
 }
 
 void TrafficDirector::collect(std::vector<TrafficSnapshot>& into) const

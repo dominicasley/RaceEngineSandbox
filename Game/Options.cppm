@@ -224,6 +224,13 @@ export struct RunOptions
     // the file grows at about 90 MB a minute on Grand City Parkway.
     std::string trafficLog;
 
+    // Where to write the police position log, or empty for none. `OSR_POLICE_LOG=<file>`: every
+    // unit in a chase — its pose, the aim, the station and the goal the director gave it, the speed
+    // it was asked for and every state flag — at 30 Hz and on every tick a flag changes, with the
+    // player and the chase's status beside them (PoliceLog.cppm). The seat's instrument for a chase
+    // that went wrong: drive it, quit, hand the file over. A few MB a minute.
+    std::string policeLog;
+
     // The driver's mirrors in the cockpit view (docs/driver-mirrors-brief.md). `OSR_MIRRORS`: the
     // word `on`, the word `off`, or the lowest level of detail the mirror may draw a traffic car at —
     // `1` is the shipped floor (a car in the mirror is never better than its LOD 1), `0` lets the
@@ -409,6 +416,12 @@ export struct RunOptions
     // white; one stop down it prints a sky blue, and the street the meter exposes does not move.
     // A look knob outside the cross-variable validation for the fog knob's reason.
     double skyEyeStops = 1.0;
+
+    // Whether a local light probe re-aims its reflection against the distance cube its capture wrote
+    // or against its influence box, `OSR_PROBE_PARALLAX`: `distance` or unset marches the cube, `box`
+    // is every reflection until 2026-09-13 and the control (docs/probe-parallax-brief.md). A look
+    // knob outside the cross-variable validation for the fog knob's reason.
+    bool probeDistanceMarch = true;
 
     // How hard the rain falls, 0..1-ish. `OSR_RAIN`, a number, or the word `off`; unset is 0.0,
     // the dry scene — off is the default here where the fog's default is the rig's own figure,
@@ -919,6 +932,12 @@ namespace
     return setting("OSR_TRAFFIC_LOG");
 }
 
+// `OSR_POLICE_LOG`: a file to write the police position log to, or unset for none. As above.
+[[nodiscard]] std::string policeLog()
+{
+    return setting("OSR_POLICE_LOG");
+}
+
 [[nodiscard]] bool policeLights()
 {
     const auto value = setting("OSR_POLICE_LIGHTS");
@@ -1267,6 +1286,24 @@ struct MirrorOptions
 
     throw std::runtime_error("OSR_KERB_CONTACT is 'on' or 'off', not '" + value +
                              "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] bool probeDistanceMarch()
+{
+    const auto value = setting("OSR_PROBE_PARALLAX");
+    if (value.empty() || value == "distance")
+    {
+        return true;
+    }
+
+    if (value == "box")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_PROBE_PARALLAX is 'distance' or 'box', not '" + value +
+                             "'. Unset is 'distance', the captured distance cube; 'box' is the influence box every "
+                             "reflection was corrected against until 2026-09-13.");
 }
 
 [[nodiscard]] std::optional<bool> frameAcceleration()
@@ -1866,6 +1903,7 @@ RunOptions runOptions()
                       .traffic = traffic(),
                       .trafficAudio = trafficAudio(),
                       .trafficLog = trafficLog(),
+                      .policeLog = policeLog(),
                       .mirrors = chosenMirrors.enabled,
                       .mirrorLevelFloor = chosenMirrors.levelFloor,
                       .policeLights = policeLights(),
@@ -1884,6 +1922,7 @@ RunOptions runOptions()
                       .assists = chosenAssists,
                       .fogDensityScale = lookMultiplier("OSR_FOG"),
                       .skyEyeStops = skyEyeStops(),
+                      .probeDistanceMarch = probeDistanceMarch(),
                       .rainIntensity = rainIntensity(),
                       .cloudCoverage = cloudCoverage(),
                       .cloudMapWidth = cloudMapWidth,

@@ -436,6 +436,7 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                                                             worldUnitsPerMetre),
                                            .densityScale = static_cast<float>(options.fogDensityScale),
                                            .skyEyeStops = static_cast<float>(options.skyEyeStops),
+                                           .probeDistanceMarch = options.probeDistanceMarch,
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
                                            .rain = static_cast<float>(options.rainIntensity),
                                            .clouds = static_cast<float>(options.cloudCoverage),
@@ -810,8 +811,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // a probe *per place*, and the constraint that decides how it has to be built is this: the skybox
     // follows the camera at 2500 units, and a probe outside it records the box's far wall instead of
     // the sky. Fixed probes 6 km apart cannot all be inside one 250 m box, so the answer is probes
-    // near the car rather than probes everywhere — a different feature from this one, and the one a
-    // city wants most.
+    // near the car rather than probes everywhere — which is what the city's street probes below
+    // are, with the specular pool following the car (EngineImpl.cpp, the probe scheduler).
     //
     // Where it stands is the track's own `lightProbeMetres`.
     const auto probeStand = toWorldUnits(track.lightProbeMetres);
@@ -844,9 +845,15 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // plus the seven local ones nearest it, and a fragment inside a box whose probe did not make
     // that cut reflects the global probe, which is what it did before any of this existed.
     //
-    // **Ordered outwards from the car**, and that order decides three things at once: which probes
-    // keep the eight real slices, which are photographed first, and therefore what a cold run looks
-    // like in its first seconds. The street the car is standing in is the one that has to be right.
+    // **The seven real slices follow the car** (2026-09-13, `EngineImpl.cpp`, the probe scheduler):
+    // a slice held by a probe the view no longer wants is handed to the nearest one without, which
+    // re-photographs into it. Until then the slices went to the first eight probes captured and
+    // stayed there, so past a few stands from the grid slot every car reflected the sky over the
+    // start line.
+    //
+    // **Ordered outwards from the car**, and that order decides what a cold run looks like in its
+    // first seconds and which probes the scheduler photographs first before the pool has found the
+    // car. The street the car is standing in is the one that has to be right.
     if (!track.trafficAsset.empty())
     {
         traffic = orThrow(loadTrafficNetwork(std::string(track.trafficAsset)));
@@ -904,7 +911,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                       .spacingMetres = probeOptions.spacingMetres,
                                       .heightMetres = probeOptions.heightMetres,
                                       .minimumSeparationMetres = probeOptions.minimumSeparationMetres,
-                                      .probeCount = scene.probes.size()};
+                                      .probeCount = scene.probes.size(),
+                                      .worldHash = probeWorldHash("assets/Shaders", std::string(track.visualAsset))};
 
         auto restored = false;
 
@@ -944,8 +952,14 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         auto settings = TrafficSettings{};
         settings.densityPerKilometre = options.trafficDensity.value_or(track.trafficDensityPerKilometre);
         settings.logPath = options.trafficLog;
+        settings.policeLogPath = options.policeLog;
         settings.bodyCount =
             track.trafficFleet.empty() ? std::uint8_t{1} : static_cast<std::uint8_t>(track.trafficFleet.size());
+
+        // The paint pool is stated once, in `trafficPalette` — a car's colour index is drawn against
+        // this count when the city is seeded and never changes, so a colour added to or taken out of
+        // that pool reaches the street without a second number moving with it.
+        settings.colourCount = static_cast<std::uint8_t>(trafficPalette.size());
 
         // Which of the fleet is the patrol car, by name: a fleet without one has no police and the
         // city seeds exactly as it did before there were any (docs/police-pursuit-brief.md).

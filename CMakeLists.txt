@@ -33,8 +33,10 @@ target_sources(OpenStreetRace PRIVATE
         Game/Track/ProbeCache.cppm
         Game/Track/RaceTrack.cppm
         Game/Track/TrafficNetwork.cppm
+        Game/Traffic/DiagnosticLog.cppm
         Game/Traffic/PoliceCar.cppm
         Game/Traffic/PoliceLights.cppm
+        Game/Traffic/PoliceLog.cppm
         Game/Traffic/TrafficDirector.cppm
         Game/Traffic/TrafficLog.cppm
         Game/Vehicle/PlayerCar.cppm

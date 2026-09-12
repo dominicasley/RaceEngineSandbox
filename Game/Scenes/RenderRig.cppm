@@ -80,6 +80,10 @@ export struct RigAir
     // How many stops darker the sky is drawn for the eye than for the probes, `OSR_SKY_STOPS` and
     // nothing else. Zero — the rig's own default — is the sky the probes see, bit for bit.
     float skyEyeStops = 0.0f;
+    // Whether a local probe's reflection is re-aimed against its captured distance cube or its
+    // influence box, `OSR_PROBE_PARALLAX` and nothing else. The rig's own default is the cube; false
+    // is every reflection until 2026-09-13, bit for bit (docs/probe-parallax-brief.md).
+    bool probeDistanceMarch = true;
     // The sun's elevation above the horizon in degrees, which is the hour this scene is set at.
     // `OSR_SUN` and nothing else; the rig's own default is the early morning it ships at.
     float sunElevationDegrees = 6.0f;
@@ -1327,6 +1331,10 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // the gain as one in a capture), so the ambient light does not move. docs/renderer.md, *Sky and
     // sun*.
     orThrow(engine.scene().setSkyEyeStops(scene, air.skyEyeStops));
+
+    // How a local probe's reflection is re-aimed (2026-09-13): against the distance cube its capture
+    // wrote, or against its influence box, which is the seat's control. docs/probe-parallax-brief.md.
+    engine.scene().setProbeDistanceMarch(scene, air.probeDistanceMarch);
 
     // The rain beside the fog: weather the scene states once and every reader branches on.
     orThrow(engine.scene().setRain(scene, air.rain));
