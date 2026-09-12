@@ -124,7 +124,7 @@ export struct RunOptions
     // It is the one knob here that changes what world the game is, so it is validated against the
     // scene like the camera and the driver are: the apron is a composed fixture with no track in it
     // at all, and naming a track alongside it is a request the game cannot honour.
-    TrackChoice track = TrackChoice::GrandCityParkway;
+    TrackChoice track = TrackChoice::Bathurst;
     CameraChoice camera = CameraChoice::Chase;
     DriverChoice driver = DriverChoice::Driver;
 
@@ -197,6 +197,48 @@ export struct RunOptions
     // is a city whose facades a car passes straight through. A track that states no collider assets
     // is unaffected either way, and Mount Panorama is one — so both frame gates see nothing of this.
     bool worldColliders = true;
+
+    // Whether the city has traffic in it. `OSR_TRAFFIC`, the word `off`, the word `on`, or a
+    // **density in cars per kilometre of lane** — so `OSR_TRAFFIC=25` is a busy city and
+    // `OSR_TRAFFIC=3` is a quiet one. Unset is `on`, which is the track's own density.
+    //
+    // Negative means "the track's own figure", which is what unset resolves to. A track that states
+    // no traffic lane export has none whatever this says, and Mount Panorama is one — so both frame
+    // gates are blind to the whole of this by construction.
+    //
+    // It is a density rather than a car count because a count means nothing without the network it
+    // is spread over: thirty cars is a traffic jam on a two-kilometre circuit and an empty city on
+    // thirty-five kilometres of lane.
+    std::optional<double> trafficDensity;
+    bool traffic = true;
+
+    // Whether the traffic can be heard. `OSR_TRAFFIC_AUDIO`, the word `on` or the word `off`; unset
+    // is `on`. The cars drive and collide either way — this is the ear's switch alone, the A/B for a
+    // seat verdict on the street's level against the car's, and it costs nothing when the track has
+    // no traffic or the fleet no recordings.
+    bool trafficAudio = true;
+
+    // Where to write the traffic position log, or empty for none. `OSR_TRAFFIC_LOG=<file>`: every
+    // car's pose and state at 30 Hz and on every tick something about it changes, written by the
+    // traffic director (TrafficLog.cppm). A one-off diagnostic for cars seen flying or appearing;
+    // the file grows at about 90 MB a minute on Grand City Parkway.
+    std::string trafficLog;
+
+    // The driver's mirrors in the cockpit view (docs/driver-mirrors-brief.md). `OSR_MIRRORS`: the
+    // word `on`, the word `off`, or the lowest level of detail the mirror may draw a traffic car at —
+    // `1` is the shipped floor (a car in the mirror is never better than its LOD 1), `0` lets the
+    // mirror draw the level the frame draws. Unset is `on` at a floor of 1. `off` is the rig with no
+    // mirror camera in it, which is what every other camera and both gates run, so a cockpit run
+    // with `off` is the cockpit as it was before there were mirrors: the glass shows the asset's own
+    // placement texture.
+    bool mirrors = true;
+    std::size_t mirrorLevelFloor = 1;
+
+    // Whether a patrol car's light bar works (docs/police-lights-brief.md): the lens that flashes and
+    // the lamp that throws its colour on the street. `OSR_POLICE_LIGHTS`, the word `on` or the word
+    // `off`; unset is `on`. `off` is the fleet as it was before there were lights — the bar a dark
+    // lens, the scene's lights the sun alone — and is the control for the point-light term's cost.
+    bool policeLights = true;
 
     // Whether the draw walk skips geometry the frame's own prepass proved is hidden.
     // `OSR_OCCLUSION`, the word `on` or the word `off`, and unset is **on**.
@@ -290,6 +332,38 @@ export struct RunOptions
     // `docs/brake-thermal-brief.md`.
     std::optional<bool> brakeThermal;
 
+    // Whether each tyre is also collided against the road as a cylinder, so a kerb face can push on
+    // it. `OSR_KERB_CONTACT`, the word `on` or the word `off`, unset for the car's own setting —
+    // which is **on** for the Golf since 2026-09-08, the day its inertness fixture passed.
+    //
+    // A seat knob for `OSR_LOAD_PATH`'s reason: what a kerb feels like is a question only the seat
+    // answers, and it is answered between two laps rather than two builds. `off` is the pre-change
+    // car and the control. `docs/kerb-contact-brief.md`.
+    std::optional<bool> kerbContact;
+
+    // Whether each corner's equation carries the chassis's own acceleration at the wheel's
+    // attachment — the unsprung mass's inertial term in the moving body frame.
+    // `OSR_FRAME_ACCELERATION`, the word `on` or the word `off`, unset for the car's own setting,
+    // which is **on** since 2026-09-08 latest of all. `off` is the corner equation every figure in
+    // docs/ older than that was measured on, and the control. `docs/frame-acceleration-brief.md`.
+    std::optional<bool> frameAcceleration;
+
+    // The rear wheel rate, newtons per metre, or unset for the car's own — **28000 since 2026-09-08**,
+    // adopted on the seat from this knob's own A/B. `OSR_REAR_WHEEL_RATE`.
+    //
+    // **The A/B switch for `docs/rear-spring-sensitivity-brief.md`.** That study's verdict was a clear
+    // interior region of 28–42 kN/m against the then-shipped 57; Dominic drove 42000 and 28000 and
+    // preferred 28000 (unblinded, one session). `57000` is now the way back to the car every
+    // measurement older than that date was taken on, and the control. A seat knob for
+    // `OSR_LOAD_PATH`'s reason: the verdict is Dominic's and is taken between two laps. It restates
+    // the rear spring so that the wheel rate at the design position is the number given, with the
+    // free length re-solved from the corner's own static load, so ride height and both stop gaps are
+    // exactly what they were. The rear damper, the bars and the stops are NOT re-sized with it —
+    // that is what the study held, and it is why 20000 and below read incoherent on this car. The
+    // spring-element rate it implies goes through the placed rear motion ratio and is not a Golf
+    // figure.
+    std::optional<double> rearWheelRate;
+
     // The air temperature, degrees Celsius. `OSR_AIR_TEMP`; unset is 20.
     //
     // **A scene property and one number, on the sun's own pattern**: the track temperature is derived
@@ -327,6 +401,14 @@ export struct RunOptions
     // Outside the cross-variable validation, again for that knob's reason: those three refuse
     // combinations that cannot exist, and the air has no partner to contradict.
     double fogDensityScale = 0.5;
+
+    // How many stops darker the sky is drawn for the eye than for the probes, `OSR_SKY_STOPS`: a
+    // number of stops, or the word `off` for the sky the probes see. Unset is 1.0, PLACED 2026-09-12
+    // and Dominic's to move: at the driving view's exposure — the meter on the street plus the
+    // outdoor dial — the zenith's blue channel sat at 1.5 on a curve whose ceiling is 1.0 and printed
+    // white; one stop down it prints a sky blue, and the street the meter exposes does not move.
+    // A look knob outside the cross-variable validation for the fog knob's reason.
+    double skyEyeStops = 1.0;
 
     // How hard the rain falls, 0..1-ish. `OSR_RAIN`, a number, or the word `off`; unset is 0.0,
     // the dry scene — off is the default here where the fog's default is the rig's own figure,
@@ -764,6 +846,143 @@ namespace
                              "'. Unset is 'on', which is the city with its buildings solid.");
 }
 
+// `OSR_TRAFFIC`. Three answers rather than two, because the useful thing to change about traffic
+// from the command line is how much of it there is.
+[[nodiscard]] std::optional<double> trafficDensity()
+{
+    const auto value = setting("OSR_TRAFFIC");
+    if (value.empty() || value == "on" || value == "off")
+    {
+        return std::nullopt;
+    }
+
+    // `std::stod` rather than `std::from_chars`, which is the choice every numeric knob in this file
+    // already makes: `<charconv>` is not in this unit's global module fragment and this unit imports
+    // nothing, which is what keeps it free of the merge cost every other module unit pays.
+    auto consumed = std::size_t{0};
+    auto parsed = 0.0;
+
+    try
+    {
+        parsed = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_TRAFFIC is 'on', 'off', or a density in cars per kilometre of lane, not '" +
+                                 value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_TRAFFIC is 'on', 'off', or a density in cars per kilometre of lane, not '" +
+                                 value + "'.");
+    }
+
+    if (parsed < 0.0 || parsed > 200.0)
+    {
+        throw std::runtime_error("OSR_TRAFFIC density is cars per kilometre of lane and has to be between 0 and 200, "
+                                 "not '" +
+                                 value + "'.");
+    }
+
+    return parsed;
+}
+
+[[nodiscard]] bool traffic()
+{
+    const auto value = setting("OSR_TRAFFIC");
+
+    return value != "off";
+}
+
+// `OSR_TRAFFIC_AUDIO`. Two answers, refused otherwise, like the other on/off switches here.
+[[nodiscard]] bool trafficAudio()
+{
+    const auto value = setting("OSR_TRAFFIC_AUDIO");
+    if (value.empty() || value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_TRAFFIC_AUDIO is 'on' or 'off', not '" + value + "'. Unset is 'on'.");
+}
+
+// `OSR_TRAFFIC_LOG`: a file to write the traffic position log to, or unset for none. Whether the
+// file could be opened is the director's line in the log, not a refusal here.
+[[nodiscard]] std::string trafficLog()
+{
+    return setting("OSR_TRAFFIC_LOG");
+}
+
+[[nodiscard]] bool policeLights()
+{
+    const auto value = setting("OSR_POLICE_LIGHTS");
+    if (value.empty() || value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_POLICE_LIGHTS is 'on' or 'off', not '" + value + "'. Unset is 'on'.");
+}
+
+// `OSR_MIRRORS`. Three answers, like the traffic's: whether there are mirrors, and how coarse a car
+// in them may be.
+struct MirrorOptions
+{
+    bool enabled;
+    std::size_t levelFloor;
+};
+
+[[nodiscard]] MirrorOptions mirrors()
+{
+    const auto value = setting("OSR_MIRRORS");
+    if (value.empty() || value == "on")
+    {
+        return MirrorOptions{.enabled = true, .levelFloor = 1};
+    }
+
+    if (value == "off")
+    {
+        return MirrorOptions{.enabled = false, .levelFloor = 0};
+    }
+
+    // `std::stod` for the reason `trafficDensity` gives: this unit imports nothing and keeps
+    // `<charconv>` out of its fragment.
+    auto consumed = std::size_t{0};
+    auto parsed = 0.0;
+
+    try
+    {
+        parsed = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_MIRRORS is 'on', 'off', or the lowest level of detail the mirror draws a car "
+                                 "at, not '" +
+                                 value + "'.");
+    }
+
+    // A level is a small whole number: the fleet exports four, and a floor past the last level is
+    // clamped to it where it is applied.
+    if (consumed != value.size() || parsed < 0.0 || parsed > 7.0 || parsed != static_cast<double>(static_cast<int>(parsed)))
+    {
+        throw std::runtime_error("OSR_MIRRORS is 'on', 'off', or a level of detail between 0 and 7, not '" + value +
+                                 "'.");
+    }
+
+    return MirrorOptions{.enabled = true, .levelFloor = static_cast<std::size_t>(parsed)};
+}
+
 [[nodiscard]] bool occlusionCulling()
 {
     const auto value = setting("OSR_OCCLUSION");
@@ -1028,6 +1247,88 @@ namespace
                              "'. Unset leaves the car's own setting alone.");
 }
 
+[[nodiscard]] std::optional<bool> kerbContact()
+{
+    const auto value = setting("OSR_KERB_CONTACT");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_KERB_CONTACT is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] std::optional<bool> frameAcceleration()
+{
+    const auto value = setting("OSR_FRAME_ACCELERATION");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_FRAME_ACCELERATION is 'on' or 'off', not '" + value +
+                             "'. Unset leaves the car's own setting alone.");
+}
+
+[[nodiscard]] std::optional<double> rearWheelRate()
+{
+    const auto value = setting("OSR_REAR_WHEEL_RATE");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto consumed = std::size_t{0};
+    auto rate = 0.0;
+
+    try
+    {
+        rate = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_REAR_WHEEL_RATE is not a number of newtons per metre: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_REAR_WHEEL_RATE is not a number of newtons per metre: '" + value + "'.");
+    }
+
+    // The study's band, 14000 to 57000, with room either side and no more: a typo that dropped a
+    // digit reads as 5700 and is refused rather than driven, and a zero or a negative number is
+    // refused rather than read as "off", because unset already means that.
+    if (rate < 10000.0 || rate > 100000.0)
+    {
+        throw std::runtime_error("OSR_REAR_WHEEL_RATE is a rear wheel rate in N/m between 10000 and 100000: '" +
+                                 value +
+                                 "'. The shipped car is 28000 since 2026-09-08; 57000 is the car before it.");
+    }
+
+    return rate;
+}
+
 [[nodiscard]] double airTemperatureCelsius()
 {
     const auto value = setting("OSR_AIR_TEMP");
@@ -1105,6 +1406,46 @@ namespace
     }
 
     return scale;
+}
+
+// The eye's sky stop, `OSR_SKY_STOPS`: a number of stops, `off` for none. Unset is the placed 1.0 —
+// there is an authored figure here as there is for the fog, so unset and `off` are different
+// statements, unlike the rain and the clouds where unset is the same zero as the word.
+[[nodiscard]] double skyEyeStops()
+{
+    const auto value = setting("OSR_SKY_STOPS");
+    if (value.empty())
+    {
+        return 1.0;
+    }
+    if (value == "off")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto stops = 0.0;
+
+    try
+    {
+        stops = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_SKY_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_SKY_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (stops < -4.0 || stops > 4.0)
+    {
+        throw std::runtime_error("OSR_SKY_STOPS is a number of stops and lies between -4 and 4: '" + value + "'.");
+    }
+
+    return stops;
 }
 
 // The rain, `OSR_RAIN`: a number for how hard it falls, `off` or unset for the dry scene. Not
@@ -1510,6 +1851,7 @@ RunOptions runOptions()
     const auto chosenCamera = camera(chosen);
     const auto chosenAssists = assists();
     const auto [cloudMapWidth, cloudMapHeight] = cloudMapSize();
+    const auto chosenMirrors = mirrors();
 
     return RunOptions{.scene = chosen,
                       .track = track(chosen),
@@ -1520,6 +1862,13 @@ RunOptions runOptions()
                       .geometricLoadPath = geometricLoadPath(),
                       .drivelineReaction = drivelineReaction(),
                       .worldColliders = worldColliders(),
+                      .trafficDensity = trafficDensity(),
+                      .traffic = traffic(),
+                      .trafficAudio = trafficAudio(),
+                      .trafficLog = trafficLog(),
+                      .mirrors = chosenMirrors.enabled,
+                      .mirrorLevelFloor = chosenMirrors.levelFloor,
+                      .policeLights = policeLights(),
                       .occlusionCulling = occlusionCulling(),
                       .tyreTemperature = tyreTemperature(),
                       .tyreThermal = tyreThermal(),
@@ -1528,9 +1877,13 @@ RunOptions runOptions()
                       .tyreRoadAreaFraction = tyreRoadAreaFraction(),
                       .tyreIdealTemperature = tyreIdealTemperature(),
                       .brakeThermal = brakeThermal(),
+                      .kerbContact = kerbContact(),
+                      .frameAcceleration = frameAcceleration(),
+                      .rearWheelRate = rearWheelRate(),
                       .airTemperatureCelsius = airTemperatureCelsius(),
                       .assists = chosenAssists,
                       .fogDensityScale = lookMultiplier("OSR_FOG"),
+                      .skyEyeStops = skyEyeStops(),
                       .rainIntensity = rainIntensity(),
                       .cloudCoverage = cloudCoverage(),
                       .cloudMapWidth = cloudMapWidth,

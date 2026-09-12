@@ -769,6 +769,30 @@ float puddleMask(vec3 worldPosition, vec3 worldUp, float wetness)
     return level * smoothstep(threshold, threshold + 0.10, shape);
 }
 
+// A point light's reach at a squared distance, in world units: the inverse square, under a window
+// that takes it to exactly zero at the light's range so a lamp adds nothing past the sphere it
+// states, and over a floor of one world unit — a tenth of a metre — so no fragment is divided by
+// nothing on the lamp's own housing. A directional light never comes here: its reach is the
+// `ambientAttenuation.w` the loop reads as it always has. **The same function is in
+// PbrFragmentShader, BlinnPhongFragmentShader and CarpaintFragmentShader and must not drift**: one
+// lamp shades every surface near it through all three, and a road lit by one law under a car lit by
+// another reads as two lamps.
+float pointLightReach(float distanceSquared, float range)
+{
+    float ratio = distanceSquared / max(range * range, 1e-6);
+    float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+    return window * window / (distanceSquared + 1.0);
+}
+
+// A view-space direction into the tangent frame the direct term is computed in — the three rows of
+// the vertex stage's tangentBinormalNormalMatrix, interpolated — so a point light's direction built
+// per fragment lands in the frame the sun's direction arrived in.
+vec3 tangentFrame(vec3 viewSpaceDirection)
+{
+    return vec3(dot(tangentInNormalSpace, viewSpaceDirection), dot(bitangentInNormalSpace, viewSpaceDirection),
+                dot(normalsInNormalSpace, viewSpaceDirection));
+}
+
 void main()
 {
     vec2 transformedTextureCoordinates = (mat3(material.textureTransform) * vec3(textureCoordinates, 1.0)).xy;
@@ -893,14 +917,30 @@ void main()
 
     for (int lightIndex = 0; lightIndex < frame.lightCount.x; lightIndex++)
     {
-        vec3 L = normalize(lightDirectionWorldSpace[lightIndex]);
+        // The direction and the reach, by the light's kind: `position.w` is 1 for a point light,
+        // whose xyz is where it stands and whose direction is built here per fragment, and 0 for a
+        // directional one, whose direction the vertex stage already rotated into tangent space and
+        // whose reach is the attenuation it always was.
+        vec3 L;
+        float reach;
+        if (frame.lights[lightIndex].position.w > 0.5)
+        {
+            vec3 toLight = frame.lights[lightIndex].position.xyz - positionInWorldSpace;
+            L = normalize(tangentFrame(mat3(frame.viewMatrix) * toLight));
+            reach = pointLightReach(dot(toLight, toLight), frame.lights[lightIndex].ambientAttenuation.w);
+        }
+        else
+        {
+            L = normalize(lightDirectionWorldSpace[lightIndex]);
+            reach = frame.lights[lightIndex].ambientAttenuation.w;
+        }
         vec3 H = normalize(L + V);
 
         float NdL = max(0.0, dot(N, L));
         float NdH = max(0.0, dot(N, H));
 
         float occlusionFromShadow = (lightIndex == shadowLight) ? shadow : 1.0;
-        float attenuation = frame.lights[lightIndex].ambientAttenuation.w * occlusionFromShadow;
+        float attenuation = reach * occlusionFromShadow;
 
         // Lambert, scaled by how far this material departs from an ordinary one. The 1/pi is what
         // makes "ordinary" mean the same thing here as it does in PbrFragmentShader, so a surface

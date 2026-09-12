@@ -13,6 +13,7 @@ module;
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -149,6 +150,18 @@ export class SimulatedCar
     // And this session's `OSR_BRAKE_THERMAL`, likewise.
     std::optional<bool> brakeThermalOverride;
 
+    // And this session's `OSR_KERB_CONTACT`, likewise.
+    std::optional<bool> kerbContactOverride;
+
+    // And this session's `OSR_FRAME_ACCELERATION`, likewise.
+    std::optional<bool> frameAccelerationOverride;
+
+    // And this session's `OSR_REAR_WHEEL_RATE`, N/m at the wheel, likewise — held and re-stamped,
+    // and for one reason more than the others: a setup sheet can itself state a rear spring rate,
+    // and the session's word wins over the sheet's the way `OSR_ASSISTS` does. See
+    // `stampRearWheelRateOverride`.
+    std::optional<double> rearWheelRateOverride;
+
     // And this session's `OSR_TYRE_CONTACT`, W/(m²·K), likewise — except that it is stamped onto every
     // corner's tyre rather than onto one flag on the setup, because the tread-road interface is a
     // property of the rubber and the road and each corner carries its own copy of both.
@@ -261,6 +274,20 @@ export class SimulatedCar
     bool upshiftHeld = false;
     bool downshiftHeld = false;
 
+    // Where this car was placed and which way it faced, so the restart key can put it back there.
+    glm::dvec3 gridPosition{0.0};
+    double gridHeading = 0.0;
+
+    // The mass ledger the model reported when it was placed, kept apart from the state: the obstacle
+    // this car offers the police is asked for before the first tick has filled the state's own.
+    double placedMass = 1.0;
+    glm::dvec3 placedCentreOfMass{0.0};
+    glm::dmat3 placedInverseInertia{1.0};
+
+    // Wrecked or arrested. The pedals are dead and the engine is out until a restart, which is what
+    // "your car is dead" means here (docs/police-pursuit-brief.md).
+    bool disabledFlag = false;
+
     // The handoff to whoever is drawing, and the asymmetry in it is deliberate: the tick publishes
     // with `try_lock` and never waits, the reader takes a plain lock and may. That is the rule this
     // whole change exists to keep — a fixed-rate clock that can be held up by a frame is not a
@@ -292,8 +319,10 @@ public:
                  std::optional<bool> drivelineReaction, std::optional<bool> tyreThermal,
                  std::optional<double> tyreContactConductance, std::optional<double> tyreRoadAreaFraction,
                  std::optional<double> tyreIdealTemperature, std::optional<bool> tyrePressure,
-                 std::optional<bool> brakeThermal, std::optional<double> tyreTemperature,
-                 const raceengine::AmbientConditions& ambient, AssistSelection assists);
+                 std::optional<bool> brakeThermal, std::optional<bool> kerbContact,
+                 std::optional<bool> frameAcceleration, std::optional<double> rearWheelRate,
+                 std::optional<double> tyreTemperature, const raceengine::AmbientConditions& ambient,
+                 AssistSelection assists);
 
     SimulatedCar(const SimulatedCar&) = delete;
     SimulatedCar(SimulatedCar&&) = delete;
@@ -301,7 +330,13 @@ public:
     SimulatedCar& operator=(SimulatedCar&&) = delete;
 
     // One tick, on the simulation's thread. `deltaTime` is the clock's own fixed step.
-    void tick(double deltaTime);
+    //
+    // `obstacles` is whatever moving solids the caller wants this car's bodywork to be able to hit
+    // this tick — traffic. They are not in the physics world and cannot be, that world being
+    // immutable by design; they are collided against the body's own box and resolved in the same
+    // pass as the road. **An empty span is the car that shipped before traffic existed, bit for
+    // bit**, which is what keeps both frame gates blind to this.
+    void tick(double deltaTime, std::span<const raceengine::DynamicObstacle> obstacles = {});
 
     // The newest tick the publish got through with. Called from the thread that draws.
     [[nodiscard]] CarSnapshot snapshot() const;
@@ -318,10 +353,46 @@ public:
         return lastStep.contacts;
     }
 
+    // Where the car is and what it is doing, as the tick left it. **Simulation thread only**, on
+    // `contacts`'s own terms and for its own reason: this is the live state the next tick will
+    // overwrite, and the thread that draws has `snapshot` for exactly this. What reads it is the
+    // traffic director, which has to tell four hundred drivers where the player is.
+    [[nodiscard]] const raceengine::VehicleState& vehicle() const
+    {
+        return state;
+    }
+
     // Main thread. Applied at the top of the next tick, onto the whole car rather than onto the one
     // being driven — see `PlayerCar::reloadSetupIfChanged` for why a sheet must never be layered on
     // its own last application.
     void applyTune(CarTune tune);
+
+    // --- the police (docs/police-pursuit-brief.md) ------------------------------------------------
+    //
+    // All on the simulation's thread, between ticks.
+
+    // What a patrol car's own solve did to this body: it hit the player.
+    void nudge(const glm::dvec3& deltaLinear, const glm::dvec3& deltaAngular);
+    // This car as a patrol car's solver sees it, with its real mass, under the id the caller names.
+    [[nodiscard]] raceengine::DynamicObstacle obstacle(std::uint32_t id) const;
+    // The body's origin on the road between the axles, world metres — the point the pursuit
+    // director takes as the player's position.
+    [[nodiscard]] glm::dvec3 bodyOrigin() const;
+    [[nodiscard]] const raceengine::CollisionBox& body() const
+    {
+        return setup.body;
+    }
+
+    // Wrecked, or arrested: the pedals are ignored, the brakes go on and the engine stalls, and one
+    // line says why. `restart` is the way back.
+    void disable(std::string_view reason);
+    [[nodiscard]] bool disabled() const
+    {
+        return disabledFlag;
+    }
+
+    // Back on the grid slot it was placed on, at rest, engine running, nothing wrong with it.
+    void restart();
 
     // Main thread, both of them, and the ring is allocated there. Starting installs a fresh one and
     // stopping takes it away, so the tick never allocates and never frees.
@@ -397,6 +468,9 @@ private:
     void publishPedalFeedback(const raceengine::VehicleStep& step, const raceengine::VehicleInput& input);
     void publishSnapshot();
     void takeTune();
+    // Stand the car on its grid slot: the mass ledger asked of the model, the state rebuilt on it, the
+    // tyres and discs seeded, the engine started. The constructor's placement and the restart's.
+    void place();
 
     // Puts this session's `OSR_ASSISTS` back onto whatever electronics have just landed. Called from
     // the constructor and from `takeTune`, which are the only two places a setup arrives — the same
@@ -421,6 +495,16 @@ private:
 
     // And this session's `OSR_BRAKE_THERMAL`, likewise.
     void stampBrakeThermalOverride();
+
+    // And this session's `OSR_KERB_CONTACT`, likewise.
+    void stampKerbContactOverride();
+
+    // And this session's `OSR_FRAME_ACCELERATION`, likewise.
+    void stampFrameAccelerationOverride();
+
+    // And this session's `OSR_REAR_WHEEL_RATE`, likewise — onto both rear springs, the free length
+    // re-solved so the static position and the stop gaps hold.
+    void stampRearWheelRateOverride();
 
     // And this session's `OSR_TYRE_CONTACT`, likewise — onto all four tyres.
     void stampTyreContactOverride();
@@ -538,7 +622,9 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
                            const std::optional<bool> tyreThermal, const std::optional<double> tyreContactConductance,
                            const std::optional<double> tyreRoadAreaFraction,
                            const std::optional<double> tyreIdealTemperature, const std::optional<bool> tyrePressure,
-                           const std::optional<bool> brakeThermal, const std::optional<double> startingTemperature,
+                           const std::optional<bool> brakeThermal, const std::optional<bool> kerbContact,
+                           const std::optional<bool> frameAcceleration, const std::optional<double> rearWheelRate,
+                           const std::optional<double> startingTemperature,
                            const raceengine::AmbientConditions& conditions, const AssistSelection chosenAssists) :
     engine(engine),
     world(world),
@@ -547,6 +633,9 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     drivelineReactionOverride(drivelineReaction),
     tyreThermalOverride(tyreThermal),
     brakeThermalOverride(brakeThermal),
+    kerbContactOverride(kerbContact),
+    frameAccelerationOverride(frameAcceleration),
+    rearWheelRateOverride(rearWheelRate),
     tyreContactOverride(tyreContactConductance),
     tyreRoadAreaOverride(tyreRoadAreaFraction),
     tyreIdealOverride(tyreIdealTemperature),
@@ -555,7 +644,9 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     ambient(conditions),
     driveline(raceengine::golfGtiMk7Driveline()),
     steering(keyboardSteering()),
-    driver(driver)
+    driver(driver),
+    gridPosition(grid),
+    gridHeading(heading)
 {
     // The car the mesh already is. `placeholderSedan` stays what it has always been — a fixture
     // whose every figure was chosen so the model could be validated against a car with no data of
@@ -572,6 +663,9 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
     stampDrivelineReactionOverride();
     stampTyreThermalOverride();
     stampBrakeThermalOverride();
+    stampKerbContactOverride();
+    stampFrameAccelerationOverride();
+    stampRearWheelRateOverride();
     stampTyreContactOverride();
     stampTyreRoadAreaOverride();
     stampTyreIdealOverride();
@@ -607,6 +701,16 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
                       setup.sampling.beltBridgingLength > 0.0 ? "coupled"
                                                               : "uncoupled -- the belt only, not a revert to 3x3");
 
+    // Said once here, the same way and with the same caveat as the belt: the sheet lands after this
+    // and the override is re-stamped onto it, so what is announced is what the car runs.
+    if (rearWheelRateOverride.has_value())
+    {
+        engine.log().info("Rear spring: OSR_REAR_WHEEL_RATE {:.0f} N/m at the wheel, {:.0f} N/m on the element; the "
+                          "shipped car is 28000 since 2026-09-08, 57000 the car before it. Damper, bars and stops "
+                          "as shipped (docs/rear-spring-sensitivity-brief.md).",
+                          rearWheelRateOverride.value(), setup.corners[2].springRate);
+    }
+
     rack.travelPerInput = setup.rackTravelPerInput;
     rack.lockToLockDegrees = steeringLockToLock;
     rack.steeringInertia = steeringSystemInertia;
@@ -620,54 +724,7 @@ SimulatedCar::SimulatedCar(raceengine::Engine& engine, const raceengine::Physics
         rack.assist = placed.value();
     }
 
-    // Standing a body up means knowing where its own centre of mass sits in its own frame, and the
-    // vehicle model is what knows: `stepVehicle` assembles that ledger out of the sprung components
-    // and the four unsprung masses on every tick. One inert tick asks it, and doubles as this
-    // setup's first proof that it solves against this world at all rather than at the first frame
-    // the driver sees.
-    const auto attitude = glm::angleAxis(heading, glm::dvec3(0.0, 1.0, 0.0));
-
-    state.chassis.orientation = attitude;
-    state.chassis.position = grid + glm::dvec3(0.0, 1.0, 0.0);
-    if (const auto probed = raceengine::stepVehicle(setup, state, {}, raceengine::noDriveTorque, world, 1e-6); !probed)
-    {
-        raceengine::fail(probed.error());
-    }
-
-    const auto centreOfMass = state.chassis.centreOfMass;
-
-    state = raceengine::VehicleState{};
-    state.chassis.orientation = attitude;
-    // The centre of mass is a point in the *body* frame, so a car placed facing anywhere but along
-    // +z has to turn it before it can be subtracted: what is being pinned to the grid slot is the
-    // body's origin, and `position` is where its centre of mass has to be for that to be true.
-    state.chassis.position = grid + attitude * centreOfMass;
-    lastRoadTorques = {};
-
-    // And this session's starting tread temperature, after the state has been rebuilt and before a
-    // tick has run.
-    //
-    // **Unset is the TRACK's temperature since 2026-08-28, and that changed with the switch.** While
-    // the thermal model shipped off, the default had to be the middle of the compound's plateau: that
-    // is the one seed under which turning it on changes nothing, and it is what both parity gates'
-    // inertness proof stood on. With the model on for good that argument is spent, and what is left
-    // is the physical one — **a car in a garage has cold tyres**, sitting at whatever the tarmac it is
-    // parked on is at. It is also the car Dominic drove and accepted, which was
-    // `OSR_TYRE_TEMP=ambient` throughout.
-    //
-    // The track rather than the air, because that is what the rubber is touching. `OSR_TYRE_TEMP=85`
-    // is the way back to the old default and `OSR_TYRE_TEMP=<n>` is any other starting point.
-    raceengine::seedTyreTemperatures(state, tyreTemperature.value_or(ambient.trackTemperature));
-
-    // The discs start at the air's temperature whatever this run said about the tyres. A car in a
-    // garage has cold brakes and there is no case for starting them anywhere else — which is why
-    // this is not a knob. **The tyres joined them in that reasoning on 2026-08-28**; they differ only
-    // in what they are resting against.
-    raceengine::seedDiscTemperatures(state, ambient.airTemperature);
-
-    // A default-constructed driveline is a car with the key out. Turning it is a command and not an
-    // input, which is why it is a call here rather than a field the tick reads.
-    raceengine::startEngine(driveline, drivelineState);
+    place();
 
     // What the device is set to is the device's; what the car needs is the car's. Told here because
     // this is the only thing that knows the steering box, and the mapping between the two is what
@@ -773,6 +830,66 @@ void SimulatedCar::stampBrakeThermalOverride()
     if (brakeThermalOverride.has_value())
     {
         setup.brakeThermal = brakeThermalOverride.value();
+    }
+}
+
+void SimulatedCar::stampKerbContactOverride()
+{
+    if (kerbContactOverride.has_value())
+    {
+        setup.kerbContact = kerbContactOverride.value();
+    }
+}
+
+void SimulatedCar::stampFrameAccelerationOverride()
+{
+    if (frameAccelerationOverride.has_value())
+    {
+        setup.frameAcceleration = frameAccelerationOverride.value();
+    }
+}
+
+void SimulatedCar::stampRearWheelRateOverride()
+{
+    if (!rearWheelRateOverride.has_value())
+    {
+        return;
+    }
+
+    // The sensitivity study's restatement, line for line (`SuspensionCharacterisationProbe.cpp`,
+    // `stateRearWheelRate`, 2026-09-08): the spring element's rate is the wheel rate through the
+    // linkage's own spring motion ratio squared; the static sprung load is recovered from whatever
+    // spring has just landed — the car's own or the sheet's — and the free length is re-solved from
+    // it, so q = 0 stays the static position and the ride height and both shaft-referred stop gaps
+    // are exactly what they were. What is deliberately NOT touched is everything the study held:
+    // the rear damper, both bars, both stops. A seat verdict on this knob is a verdict on that car.
+    for (const auto index : {std::size_t{2}, std::size_t{3}})
+    {
+        auto& corner = setup.corners[index];
+        const auto spring = raceengine::solveSpringKinematics(corner.hardpoints,
+                                                              raceengine::springElementOf(corner.hardpoints), 0.0, 0.0);
+        if (!spring)
+        {
+            raceengine::fail("OSR_REAR_WHEEL_RATE: " + spring.error());
+        }
+
+        const auto ratio = std::abs(spring->motionRatio);
+        const auto sprungLoad = (corner.springFreeLength - spring->length) * corner.springRate * ratio;
+
+        corner.springRate = rearWheelRateOverride.value() / (ratio * ratio);
+
+        const auto restLength = raceengine::springFreeLengthForLoad(corner, sprungLoad);
+        if (!restLength)
+        {
+            raceengine::fail("OSR_REAR_WHEEL_RATE: " + restLength.error());
+        }
+
+        corner.springFreeLength = restLength.value();
+
+        if (const auto validated = raceengine::validateCornerSetup(corner); !validated)
+        {
+            raceengine::fail("OSR_REAR_WHEEL_RATE: " + validated.error());
+        }
     }
 }
 
@@ -925,6 +1042,9 @@ void SimulatedCar::takeTune()
     stampDrivelineReactionOverride();
     stampTyreThermalOverride();
     stampBrakeThermalOverride();
+    stampKerbContactOverride();
+    stampFrameAccelerationOverride();
+    stampRearWheelRateOverride();
     stampTyreContactOverride();
     stampTyreRoadAreaOverride();
     stampTyreIdealOverride();
@@ -964,6 +1084,122 @@ std::vector<raceengine::TelemetryFrame> SimulatedCar::stopRecording()
     return taken.inOrder();
 }
 
+void SimulatedCar::place()
+{
+    // Standing a body up means knowing where its own centre of mass sits in its own frame, and the
+    // vehicle model is what knows: `stepVehicle` assembles that ledger out of the sprung components
+    // and the four unsprung masses on every tick. One inert tick asks it, and doubles as this
+    // setup's first proof that it solves against this world at all rather than at the first frame
+    // the driver sees.
+    const auto attitude = glm::angleAxis(gridHeading, glm::dvec3(0.0, 1.0, 0.0));
+
+    state.chassis.orientation = attitude;
+    state.chassis.position = gridPosition + glm::dvec3(0.0, 1.0, 0.0);
+    if (const auto probed = raceengine::stepVehicle(setup, state, {}, raceengine::noDriveTorque, world, 1e-6); !probed)
+    {
+        raceengine::fail(probed.error());
+    }
+
+    const auto centreOfMass = state.chassis.centreOfMass;
+
+    // The ledger, kept for the obstacle this car offers before its first tick has run.
+    placedMass = state.chassis.mass;
+    placedCentreOfMass = centreOfMass;
+    placedInverseInertia = state.chassis.inverseInertia;
+
+    state = raceengine::VehicleState{};
+    state.chassis.orientation = attitude;
+    // The centre of mass is a point in the *body* frame, so a car placed facing anywhere but along
+    // +z has to turn it before it can be subtracted: what is being pinned to the grid slot is the
+    // body's origin, and `position` is where its centre of mass has to be for that to be true.
+    state.chassis.position = gridPosition + attitude * centreOfMass;
+    lastRoadTorques = {};
+
+    // And this session's starting tread temperature, after the state has been rebuilt and before a
+    // tick has run.
+    //
+    // **Unset is the TRACK's temperature since 2026-08-28, and that changed with the switch.** While
+    // the thermal model shipped off, the default had to be the middle of the compound's plateau: that
+    // is the one seed under which turning it on changes nothing, and it is what both parity gates'
+    // inertness proof stood on. With the model on for good that argument is spent, and what is left
+    // is the physical one — **a car in a garage has cold tyres**, sitting at whatever the tarmac it is
+    // parked on is at. It is also the car Dominic drove and accepted, which was
+    // `OSR_TYRE_TEMP=ambient` throughout.
+    //
+    // The track rather than the air, because that is what the rubber is touching. `OSR_TYRE_TEMP=85`
+    // is the way back to the old default and `OSR_TYRE_TEMP=<n>` is any other starting point.
+    raceengine::seedTyreTemperatures(state, tyreTemperature.value_or(ambient.trackTemperature));
+
+    // The discs start at the air's temperature whatever this run said about the tyres. A car in a
+    // garage has cold brakes and there is no case for starting them anywhere else — which is why
+    // this is not a knob. **The tyres joined them in that reasoning on 2026-08-28**; they differ only
+    // in what they are resting against.
+    raceengine::seedDiscTemperatures(state, ambient.airTemperature);
+
+    // A default-constructed driveline is a car with the key out. Turning it is a command and not an
+    // input, which is why it is a call here rather than a field the tick reads.
+    raceengine::startEngine(driveline, drivelineState);
+}
+
+void SimulatedCar::restart()
+{
+    disabledFlag = false;
+
+    state = raceengine::VehicleState{};
+    drivelineState = raceengine::DrivelineState{};
+    assistState = raceengine::AssistState{};
+    lastTelemetry = raceengine::TelemetryFrame{};
+    lastDrivelineTorques = raceengine::DrivelineTorques{};
+    lastStep = raceengine::VehicleStep{};
+    lastInput = raceengine::VehicleInput{};
+    lastAssistChannels = raceengine::AssistChannels{};
+    smoothedAcceleration = glm::dvec3(0.0);
+    gear = 1;
+    upshiftHeld = false;
+    downshiftHeld = false;
+
+    place();
+    publishSnapshot();
+}
+
+void SimulatedCar::disable(const std::string_view reason)
+{
+    if (disabledFlag)
+    {
+        return;
+    }
+
+    disabledFlag = true;
+    engine.log().info("Your car is dead: {}. Press R to restart.", reason);
+}
+
+void SimulatedCar::nudge(const glm::dvec3& deltaLinear, const glm::dvec3& deltaAngular)
+{
+    state.chassis.linearVelocity += deltaLinear;
+    raceengine::setAngularVelocity(state.chassis, raceengine::angularVelocity(state.chassis) + deltaAngular);
+}
+
+glm::dvec3 SimulatedCar::bodyOrigin() const
+{
+    return state.chassis.position - state.chassis.orientation * placedCentreOfMass;
+}
+
+raceengine::DynamicObstacle SimulatedCar::obstacle(const std::uint32_t id) const
+{
+    const auto& chassis = state.chassis;
+    const auto rotation = glm::mat3_cast(chassis.orientation);
+
+    return raceengine::DynamicObstacle{.id = id,
+                                       .centre = bodyOrigin() + chassis.orientation * setup.body.centre,
+                                       .orientation = chassis.orientation,
+                                       .halfExtents = setup.body.halfExtents,
+                                       .centreOfMass = chassis.position,
+                                       .linearVelocity = chassis.linearVelocity,
+                                       .angularVelocity = raceengine::angularVelocity(chassis),
+                                       .inverseMass = placedMass > 0.0 ? 1.0 / placedMass : 0.0,
+                                       .inverseInertia = rotation * placedInverseInertia * glm::transpose(rotation)};
+}
+
 CarSnapshot SimulatedCar::snapshot() const
 {
     const auto guard = std::lock_guard<std::mutex>(publication);
@@ -995,7 +1231,7 @@ void SimulatedCar::publishSnapshot()
     published = next;
 }
 
-void SimulatedCar::tick(const double deltaTime)
+void SimulatedCar::tick(const double deltaTime, const std::span<const raceengine::DynamicObstacle> obstacles)
 {
     takeTune();
 
@@ -1024,6 +1260,14 @@ void SimulatedCar::tick(const double deltaTime)
     input.brake = asked.brake;
     input.gear = gear;
 
+    if (disabledFlag)
+    {
+        // A wreck, or an arrest: the pedals are dead, the brakes are on and the engine is out.
+        input.throttle = 0.0;
+        input.brake = 1.0;
+        drivelineState.engine = raceengine::EngineState::Stalled;
+    }
+
     const auto entryVelocity = state.chassis.linearVelocity;
     const auto inertias = raceengine::wheelInertias(setup);
 
@@ -1049,6 +1293,17 @@ void SimulatedCar::tick(const double deltaTime)
     sensors.yawRate = lastTelemetry.yawRate;
     sensors.lateralAcceleration = lastTelemetry.acceleration.x;
     sensors.steeringWheelAngle = lastTelemetry.steeringWheelAngle;
+
+    // What the driveline is putting on each wheel, which the road-action observable needs because a
+    // driven wheel is being spun up by two things and only one of them is the road.
+    //
+    // **Last tick's, and that is what a real unit has**: the driveline is stepped below this call,
+    // because its input is the throttle the electronics have just scaled. An ECU reads a driveline
+    // torque off the bus with a message period of lag; here that lag is one physics tick. It is
+    // DIRECTLY KNOWN rather than estimated, which is the whole reason the observable is allowed to
+    // use it.
+    sensors.driveTorque = lastDrivelineTorques.wheel;
+    sensors.driveTorqueKnown = true;
 
     // The pedal reaches the electronics as the pressure the hydraulics made of it, which the car
     // states and this layer cannot: the servo's runout and the rear circuit's proportioning valve are
@@ -1091,7 +1346,8 @@ void SimulatedCar::tick(const double deltaTime)
     }
 
     const auto stepped =
-        raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime, assistCommand.brakes, ambient);
+        raceengine::stepVehicle(setup, state, input, wheelTorques, world, deltaTime, assistCommand.brakes, ambient,
+                                obstacles);
     if (!stepped)
     {
         // Nothing here is a runtime condition: the setup was swept across its own travel at load
@@ -1267,7 +1523,8 @@ namespace
         .corneringActive = channels.corneringActive,
         .yawDelayEnabled = assists.antilock.yawMomentDelay,
         .yawDelayActive = channels.yawDelayEngaged,
-        .engineTorqueReduction = channels.engineTorqueReduction};
+        .engineTorqueReduction = channels.engineTorqueReduction,
+        .yawDisturbance = channels.yawDisturbance};
 
     // By index, both sides. `raceengine::tracedCornerCount` and `raceengine::cornerCount` are the
     // same four corners in the same order — the input partition cannot name the physics module's
@@ -1279,25 +1536,33 @@ namespace
     {
         const auto& wheel = frame.wheels[index];
 
-        trace.wheels[index] = raceengine::WheelTrace{.slipAngle = wheel.slipAngle,
-                                                     .slipRatio = wheel.slipRatio,
-                                                     .verticalLoad = wheel.verticalLoad,
-                                                     .lateralForce = wheel.forceLateral,
-                                                     .longitudinalForce = wheel.forceLongitudinal,
-                                                     .aligningMoment = wheel.aligningMoment,
-                                                     .suspensionTravel = wheel.suspensionTravel,
-                                                     .damperVelocity = wheel.damperVelocity,
-                                                     .contactingSamples = wheel.contactingSamples,
-                                                     .patchDepthSpread = wheel.patchDepthSpread,
-                                                     .antilockActive = channels.antilockActive[index],
-                                                     .antilockCycles = channels.antilockCycles[index],
-                                                     .brakePressure = channels.pressure[index],
-                                                     .treadCoreTemperature = wheel.tyreCoreTemperature,
-                                                     .discTemperature = wheel.discTemperature,
-                                                     .wheelTemperature = wheel.wheelTemperature,
-                                                     .gasTemperature = wheel.tyreGasTemperature,
-                                                     .tyrePressurePsi = wheel.tyrePressurePsi,
-                                                     .recession = wheel.complianceRecession};
+        trace.wheels[index] =
+            raceengine::WheelTrace{.slipAngle = wheel.slipAngle,
+                                   .slipRatio = wheel.slipRatio,
+                                   .verticalLoad = wheel.verticalLoad,
+                                   .lateralForce = wheel.forceLateral,
+                                   .longitudinalForce = wheel.forceLongitudinal,
+                                   .aligningMoment = wheel.aligningMoment,
+                                   .suspensionTravel = wheel.suspensionTravel,
+                                   .damperVelocity = wheel.damperVelocity,
+                                   .contactingSamples = wheel.contactingSamples,
+                                   .patchDepthSpread = wheel.patchDepthSpread,
+                                   .antilockActive = channels.antilockActive[index],
+                                   .antilockCycles = channels.antilockCycles[index],
+                                   .brakePressure = channels.pressure[index],
+                                   .roadTorque = channels.roadTorque[index],
+                                   .roadEvidence = static_cast<std::uint32_t>(channels.roadEvidence[index]),
+                                   .recoveryBanded = channels.recoveryBanded[index],
+                                   .recoveryLimited = channels.recoveryLimited[index],
+                                   .treadCoreTemperature = wheel.tyreCoreTemperature,
+                                   .discTemperature = wheel.discTemperature,
+                                   .wheelTemperature = wheel.wheelTemperature,
+                                   .gasTemperature = wheel.tyreGasTemperature,
+                                   .tyrePressurePsi = wheel.tyrePressurePsi,
+                                   .recession = wheel.complianceRecession,
+                                   .obstacleContacts = wheel.obstacleContacts,
+                                   .obstacleNormalForce = wheel.obstacleNormalForce,
+                                   .obstacleAxisElevation = wheel.obstacleAxisElevation};
     }
 
     return trace;

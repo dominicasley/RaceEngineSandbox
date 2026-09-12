@@ -1,7 +1,10 @@
 module;
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -13,13 +16,16 @@ module;
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <Profiling/RaceEngineProfile.hpp>
 
 export module osr.game:Simulation;
 
 import :Options;
+import :PoliceCar;
 import :SimulatedCar;
+import :TrafficDirector;
 
 import raceengine;
 
@@ -91,8 +97,33 @@ public:
                       std::optional<bool> tyreThermal, std::optional<double> tyreContactConductance,
                       std::optional<double> tyreRoadAreaFraction, std::optional<double> tyreIdealTemperature,
                       std::optional<bool> tyrePressure, std::optional<bool> brakeThermal,
-                      std::optional<double> tyreTemperature, const raceengine::AmbientConditions& ambient,
-                      AssistSelection assists);
+                      std::optional<bool> kerbContact, std::optional<bool> frameAcceleration,
+                      std::optional<double> rearWheelRate, std::optional<double> tyreTemperature,
+                      const raceengine::AmbientConditions& ambient, AssistSelection assists);
+
+    // Before `start`, and after the cars. The city's traffic, ticked on this thread ahead of every
+    // car so that what a car collides against is where traffic is *now* rather than where it was a
+    // tick ago.
+    //
+    // **It lives here rather than in the scene for the reason the world does**: it is written every
+    // tick by this thread, and anything else that wants to see it asks through a published snapshot.
+    // A director owned by the scene and ticked from the frame would be a second writer on a
+    // different clock.
+    void enableTraffic(const TrafficNetwork& source, const TrafficSettings& settings,
+                       std::optional<raceengine::NavMesh> navmesh);
+
+    // Where the traffic is, for the thread that draws it. Empty when there is none.
+    void collectTraffic(std::vector<TrafficSnapshot>& into) const;
+
+    // The R key. Any thread: the request is taken at the top of the next tick, on this thread, and
+    // puts every car back on its grid slot, reseeds the traffic and clears the police's meter — a
+    // wrecked or an arrested car is a car that cannot drive anywhere, and the process should not
+    // have to be restarted to drive again (docs/police-pursuit-brief.md).
+    void requestRestart();
+    // The number keys, one to five: the police's meter put at that level and a chase started if none
+    // is on. Any thread; taken at the top of the next tick like the restart. The last request before
+    // the tick wins.
+    void requestWantedLevel(int level);
 
     // Once every body is placed. Nothing ticks until this is called, so a half-built world is never
     // stepped — the same rule a scene keeps when it registers its update callback last.
@@ -137,6 +168,7 @@ private:
     void freeRunning(const std::stop_token& stopToken);
     void handshaken(const std::stop_token& stopToken);
     void step();
+    void restart();
 
     raceengine::Engine& engine;
     // Declared before the thread, so the thread is joined before the world it queries is destroyed.
@@ -145,7 +177,36 @@ private:
     // Behind pointers because a `SimulatedCar` owns mutexes and is therefore immovable, and because
     // a vector that reallocated would invalidate every reference the game holds into it.
     std::vector<std::unique_ptr<SimulatedCar>> cars;
+    // Declared after the cars and before the thread: it is read by the tick and it holds a
+    // publication lock of its own, so it must outlive the thread and be destroyed before nothing.
+    std::optional<TrafficDirector> traffic;
     bool driven;
+
+    // Simulated time, as a count of ticks rather than a clock. It is what the traffic lights run on,
+    // and it is a function of the tick number so a captured run sees the same lights on the same
+    // frame on any machine.
+    std::int64_t tickCount = 0;
+
+    // Scratch the tick reuses, so a city with traffic in it allocates nothing per tick.
+    std::vector<raceengine::DynamicObstacle> obstacleScratch;
+    std::vector<raceengine::TrafficVehicle> vehicleScratch;
+
+    // The player as the police see it, rebuilt every tick, and the velocity change the player's
+    // bodywork took on the last tick, split by what it hit. The police read the hit a tick late,
+    // because the traffic — and the director in it — is ticked before the cars are.
+    PlayerFrame playerFrame{};
+    struct PlayerImpacts
+    {
+        double police = 0.0;
+        double traffic = 0.0;
+        double world = 0.0;
+    };
+    PlayerImpacts pendingImpacts{};
+    std::vector<BodyworkHit> hitScratch;
+
+    std::atomic<bool> restartRequested{false};
+    // Zero is no request.
+    std::atomic<int> wantedLevelRequested{0};
 
     // The handshake. Counters rather than a flag, so that a request issued before the thread reached
     // its wait is not lost and two requests cannot collapse into one.
@@ -196,15 +257,46 @@ SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, cons
                               const std::optional<double> tyreContactConductance,
                               const std::optional<double> tyreRoadAreaFraction,
                               const std::optional<double> tyreIdealTemperature, const std::optional<bool> tyrePressure,
-                              const std::optional<bool> brakeThermal, const std::optional<double> tyreTemperature,
+                              const std::optional<bool> brakeThermal, const std::optional<bool> kerbContact,
+                              const std::optional<bool> frameAcceleration, const std::optional<double> rearWheelRate,
+                              const std::optional<double> tyreTemperature,
                               const raceengine::AmbientConditions& ambient, const AssistSelection assists)
 {
     cars.push_back(std::make_unique<SimulatedCar>(engine, track, grid, heading, driver, beltBridgingLength, loadPath,
                                                   drivelineReaction, tyreThermal, tyreContactConductance,
                                                   tyreRoadAreaFraction, tyreIdealTemperature, tyrePressure,
-                                                  brakeThermal, tyreTemperature, ambient, assists));
+                                                  brakeThermal, kerbContact, frameAcceleration, rearWheelRate,
+                                                  tyreTemperature, ambient, assists));
 
     return *cars.back();
+}
+
+void Simulation::enableTraffic(const TrafficNetwork& source, const TrafficSettings& settings,
+                               std::optional<raceengine::NavMesh> navmesh)
+{
+    if (thread.joinable())
+    {
+        return;
+    }
+
+    // A driven run's tick count is a function of the frame, so its route searches stay on this
+    // thread at one a tick; a free-running one hands them to a worker (docs/pursuit-radio-brief.md).
+    auto chosen = settings;
+    chosen.routeOnWorker = !driven;
+
+    traffic.emplace(engine, source, chosen, std::move(navmesh));
+}
+
+void Simulation::collectTraffic(std::vector<TrafficSnapshot>& into) const
+{
+    if (!traffic)
+    {
+        into.clear();
+
+        return;
+    }
+
+    traffic->collect(into);
 }
 
 void Simulation::start()
@@ -240,14 +332,175 @@ void Simulation::freeProps(std::vector<raceengine::PropTransform>& into) const
     into = publishedProps;
 }
 
+void Simulation::requestRestart()
+{
+    restartRequested.store(true);
+}
+
+void Simulation::requestWantedLevel(const int level)
+{
+    wantedLevelRequested.store(level);
+}
+
+void Simulation::restart()
+{
+    for (auto& car : cars)
+    {
+        car->restart();
+    }
+
+    if (traffic)
+    {
+        traffic->restart();
+    }
+
+    pendingImpacts = PlayerImpacts{};
+
+    engine.log().info("Restarted: the car is back on its grid slot, the traffic is reseeded and the police have "
+                      "forgotten you.");
+}
+
 void Simulation::step()
 {
     RACEENGINE_ZONE_N("simulation tick");
 
+    if (restartRequested.exchange(false))
+    {
+        restart();
+    }
+
+    if (const auto level = wantedLevelRequested.exchange(0); level != 0 && traffic)
+    {
+        traffic->setWantedLevel(level);
+    }
+
+    // **Traffic first, and the order is the whole of the seam.** The city moves, and only then does
+    // a car collide against it — so what the contact solver is handed is where a traffic car is on
+    // this tick. Ticked before the cars rather than after them for the same reason the prop release
+    // happens before the world is stepped: a body that moved after the thing that hit it was
+    // resolved is a body that was hit where it no longer is.
+    if (traffic)
+    {
+        vehicleScratch.clear();
+
+        for (const auto& car : cars)
+        {
+            const auto& chassis = car->vehicle().chassis;
+
+            vehicleScratch.push_back(
+                raceengine::TrafficVehicle{.positionMetres = chassis.position,
+                                           .velocityMetresPerSecond = chassis.linearVelocity,
+                                           .forward = chassis.orientation * glm::dvec3(0.0, 0.0, 1.0)});
+        }
+
+        const auto focus = vehicleScratch.empty() ? glm::dvec3(0.0) : vehicleScratch.front().positionMetres;
+
+        // The player, as the police see it: where its body is, which way it is going, how big it is,
+        // what its bodywork took last tick — and, for a patrol car's own solver, the car as an
+        // obstacle with its real mass, so a ram moves both cars.
+        const PlayerFrame* framed = nullptr;
+        if (!cars.empty())
+        {
+            const auto& player = *cars.front();
+            const auto& chassis = player.vehicle().chassis;
+            const auto& box = player.body();
+
+            playerFrame.player = raceengine::PursuitPlayer{.positionMetres = player.bodyOrigin(),
+                                                           .velocityMetresPerSecond = chassis.linearVelocity,
+                                                           .forward = chassis.orientation * glm::dvec3(0.0, 0.0, 1.0),
+                                                           .lengthMetres = 2.0 * box.halfExtents.z,
+                                                           .widthMetres = 2.0 * box.halfExtents.x,
+                                                           .impactPoliceMetresPerSecond = pendingImpacts.police,
+                                                           .impactTrafficMetresPerSecond = pendingImpacts.traffic,
+                                                           .impactWorldMetresPerSecond = pendingImpacts.world};
+            playerFrame.obstacle = player.obstacle(playerObstacle);
+            framed = &playerFrame;
+        }
+
+        pendingImpacts = PlayerImpacts{};
+
+        traffic->tick(tickSeconds, static_cast<double>(tickCount) * tickSeconds, focus, vehicleScratch, track, framed);
+
+        if (!cars.empty())
+        {
+            auto& player = *cars.front();
+
+            // What the patrol cars' own solves did to the player's body this tick, applied before the
+            // player's tick reads its velocity; and it counts as being hit by the police.
+            for (const auto& nudge : traffic->playerNudges())
+            {
+                player.nudge(nudge.deltaLinear, nudge.deltaAngular);
+                pendingImpacts.police += nudge.impactMetresPerSecond;
+            }
+
+            const auto& chase = traffic->pursuit();
+            if (chase.wrecked)
+            {
+                player.disable("the bodywork has taken all it can");
+            }
+            else if (chase.busted)
+            {
+                player.disable("busted");
+            }
+        }
+    }
+
     for (auto& car : cars)
     {
-        car->tick(tickSeconds);
+        obstacleScratch.clear();
+
+        if (traffic)
+        {
+            traffic->obstaclesNear(car->vehicle().chassis.position, obstacleScratch);
+        }
+
+        car->tick(tickSeconds, obstacleScratch);
     }
+
+    // What the cars' own solvers did to the traffic they hit, handed back so a car that was pushed
+    // hard enough stops being a point on a lane and becomes a body. Nothing happens on a track with
+    // no traffic, and nothing happens on a tick where nothing was touched.
+    if (traffic)
+    {
+        for (auto index = std::size_t{0}; index < cars.size(); index++)
+        {
+            const auto& car = *cars[index];
+
+            // What the car's bodywork read off its own manifold, as this car's share of each hit it
+            // met at a closing speed (`bodyworkHits`) — once, on the tick it arrives, and never the
+            // solver's impulse, which carries the position correction on every tick of a push-out.
+            hitScratch.clear();
+            bodyworkHits(car.contacts(), car.vehicle().chassis.mass, hitScratch);
+
+            traffic->applyContacts(car.contacts(), hitScratch);
+
+            // And the player's own, split by what it hit. The road holds the car up through the
+            // tyres and not through this manifold, so ordinary driving reads zero here and a wall, a
+            // traffic car or a patrol car reads the hit. Read by the police on the next tick.
+            if (index != 0)
+            {
+                continue;
+            }
+
+            for (const auto& hit : hitScratch)
+            {
+                if (hit.obstacle == raceengine::noObstacle)
+                {
+                    pendingImpacts.world += hit.selfMetresPerSecond;
+                }
+                else if (traffic->isPolice(hit.obstacle))
+                {
+                    pendingImpacts.police += hit.selfMetresPerSecond;
+                }
+                else
+                {
+                    pendingImpacts.traffic += hit.selfMetresPerSecond;
+                }
+            }
+        }
+    }
+
+    tickCount++;
 
     // **The street furniture, and this is the only place in this project where the world is
     // written.** The order is the whole of it. Each car has just decided, inside its own tick and
@@ -289,6 +542,19 @@ void Simulation::step()
         }
     }
 
+    // And the patrol cars' — the full models the traffic director stepped this tick decided about
+    // the props they hit on the same terms, and until 2026-09-11 nobody carried their decisions
+    // here: a prop a patrol car hit never broke (docs/police-driving-brief.md §2.2). A prop the
+    // player and a patrol car both broke on one tick is listed twice and released once.
+    if (traffic)
+    {
+        const auto releases = traffic->propReleases();
+        const auto velocities = traffic->propVelocities();
+
+        releaseScratch.insert(releaseScratch.end(), releases.begin(), releases.end());
+        velocityScratch.insert(velocityScratch.end(), velocities.begin(), velocities.end());
+    }
+
     track.releaseProps(releaseScratch);
     track.applyPropVelocities(velocityScratch);
     track.step(tickSeconds);
@@ -300,6 +566,11 @@ void Simulation::step()
         {
             publishedProps = propScratch;
         }
+    }
+
+    if (traffic)
+    {
+        traffic->publish();
     }
 
     // A frame of its own, on its own track. The render frame and this one are different clocks —
@@ -331,8 +602,13 @@ void Simulation::run(const std::stop_token& stopToken)
 // rather than deferred. A thread that ran four ticks back to back to catch up would have rebuilt the
 // very thing this replaced, one layer down, and handed the writer a burst again. So simulated time
 // can run slightly slow under load, and the publish interval stays regular — which is the trade this
-// change exists to make. At 17.7 µs of work against a 2.78 ms budget it is not a trade that is
-// expected to be called in.
+// change exists to make. At 17.7 µs of work against a 2.78 ms budget it was not a trade that was
+// expected to be called in; the police's route searches called it in on 2026-09-10 (a 17 ms search
+// in the tick), and the trace also showed the loop paying a whole period on top of every overrun:
+// after a late tick it waited `period` from *now*, so a tick of D ms cost D + 2.78 ms of wall time for
+// one tick of simulated time. Now the next tick starts at once. That is still one tick per wake-up —
+// the interval between two ticks is never shorter than the period, because a late tick is by
+// definition longer than it — and it is not a burst (docs/pursuit-radio-brief.md, §1.4).
 void Simulation::freeRunning(const std::stop_token& stopToken)
 {
     const auto period = std::chrono::nanoseconds(static_cast<std::int64_t>(1e9 * tickSeconds));
@@ -347,7 +623,7 @@ void Simulation::freeRunning(const std::stop_token& stopToken)
 
         if (const auto now = std::chrono::steady_clock::now(); next < now)
         {
-            next = now + period;
+            next = now;
         }
 
         auto held = std::unique_lock<std::mutex>(waiting);

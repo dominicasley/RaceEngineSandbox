@@ -11,6 +11,7 @@ module;
 export module osr.game:RenderRig;
 
 import :CloudNoise;
+import :PoliceLights;
 
 import raceengine;
 
@@ -76,6 +77,9 @@ export struct RigAir
     // A multiplier on it, which is `OSR_FOG` and nothing else — the seat knob, so that thicker and
     // thinner are one run apart rather than one rebuild apart.
     float densityScale = 1.0f;
+    // How many stops darker the sky is drawn for the eye than for the probes, `OSR_SKY_STOPS` and
+    // nothing else. Zero — the rig's own default — is the sky the probes see, bit for bit.
+    float skyEyeStops = 0.0f;
     // The sun's elevation above the horizon in degrees, which is the hour this scene is set at.
     // `OSR_SUN` and nothing else; the rig's own default is the early morning it ships at.
     float sunElevationDegrees = 6.0f;
@@ -122,6 +126,12 @@ export constexpr float rigCompensation = 1.50f;
 // layer every renderable is born on, so nothing but the car ever states one.
 export constexpr unsigned int worldLayer = 1u << 0;
 export constexpr unsigned int carLayer = 1u << 1;
+// ...and the third, which is the mirror's alone: what the driver's mirror draws that no other view
+// may. The traffic's capped level of detail stands here — a car the frame draws at its nearest level
+// keeps a coarser copy of itself on this layer for the mirror, and every other view masks it out,
+// the occlusion prepass and the near cascades included, because a second surface where the frame
+// already has one is a fight in the shared depth (docs/driver-mirrors-brief.md).
+export constexpr unsigned int mirrorLayer = 1u << 2;
 
 // What the rig hands back. The sky follows the camera, so the scene has to put it back on every
 // tick; the two extra cameras are the layered frame's, and the scene has to keep their pose in step
@@ -133,6 +143,10 @@ export struct RigBuild
     RenderableModel* sky;
     Camera* carCamera;
     Camera* frameCamera;
+    // The driver's mirror camera, when the rig was asked for one, and null otherwise. The scene aims
+    // it every tick (aimDriverMirror) — it is the one camera in the rig that does not follow the
+    // pose camera, because a mirror looks where the car points and not where the driver does.
+    Camera* mirrorCamera = nullptr;
     raceengine::Resource<raceengine::PostProcess> composite;
     // The effective cloud coverage the rig settled on — the scene's own statement with the rain
     // floor applied — handed back because the scene owns the one per-tick job clouds create: the
@@ -146,9 +160,13 @@ export struct RigBuild
     int cloudMarchStrips = 1;
 };
 
+// `driverMirrors` adds the mirror camera and its map (docs/driver-mirrors-brief.md): one more scene
+// view, rear-facing, drawn through the scene shaders with the cascades and nothing else — no
+// prepass, no occlusion, no meter, no bloom, no post chain — into a 2:1 half-float map the "mirror"
+// material samples by UV. Off is the rig exactly as it was, which is what both gates run.
 export [[nodiscard]] RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera,
                                              float skyDistance = 2500.0f, RigAir air = RigAir{},
-                                             bool occlusionCulling = true);
+                                             bool occlusionCulling = true, bool driverMirrors = false);
 
 // The three cameras are one eye. Every field the projection and the view matrix are built from is
 // copied verbatim, so the matrices — and with them the culling, the blended sort keys and the
@@ -262,8 +280,15 @@ raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine,
     constexpr auto planetRadius = 6371e3f;
     constexpr auto atmosphereRadius = 6471e3f;
     constexpr auto rayOriginHeight = 6372e3f;
-    constexpr auto rayleighScattering = glm::vec3(5.5e-6f, 13.0e-6f, 22.4e-6f);
-    constexpr auto mieScattering = 21e-6f;
+    // The blue and the Mie coefficient moved with the shader on 2026-09-11 (22.4e-6 -> 33.1e-6,
+    // 21e-6 -> 4e-6, the measured clear-sky values), which moves the sun's colour ratio at every
+    // elevation but the six-degree anchor. The ozone term followed on 2026-09-12: absorption only,
+    // over a tent layer centred at 25 km and 15 km to each side of it.
+    constexpr auto rayleighScattering = glm::vec3(5.5e-6f, 13.0e-6f, 33.1e-6f);
+    constexpr auto mieScattering = 4e-6f;
+    constexpr auto ozoneAbsorption = glm::vec3(0.650e-6f, 1.881e-6f, 0.085e-6f);
+    constexpr auto ozoneLayerCentre = 25e3f;
+    constexpr auto ozoneLayerHalfWidth = 15e3f;
     constexpr auto rayleighScaleHeight = 8e3f;
     constexpr auto mieScaleHeight = 1.2e3f;
     constexpr auto steps = 256;
@@ -277,19 +302,22 @@ raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine,
 
     auto rayleighDepth = 0.0f;
     auto mieDepth = 0.0f;
+    auto ozoneDepth = 0.0f;
     for (auto step = 0; step < steps; step++)
     {
         const auto sample = origin + direction * ((static_cast<float>(step) + 0.5f) * stepSize);
         const auto height = glm::length(sample) - planetRadius;
         rayleighDepth += glm::exp(-height / rayleighScaleHeight) * stepSize;
         mieDepth += glm::exp(-height / mieScaleHeight) * stepSize;
+        ozoneDepth += glm::max(1.0f - glm::abs(height - ozoneLayerCentre) / ozoneLayerHalfWidth, 0.0f) * stepSize;
     }
 
-    return glm::exp(-(rayleighScattering * rayleighDepth + glm::vec3(mieScattering * mieDepth)));
+    return glm::exp(-(rayleighScattering * rayleighDepth + glm::vec3(mieScattering * mieDepth)
+                      + ozoneAbsorption * ozoneDepth));
 }
 
 RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera, const float skyDistance,
-                        const RigAir air, const bool occlusionCulling)
+                        const RigAir air, const bool occlusionCulling, const bool driverMirrors)
 {
     // **Half past four in the afternoon, and the sun is nineteen degrees up** (the derivation is on
     // the option's default). The one number that says what time of day this
@@ -380,6 +408,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                            engine.resource().loadTextFileAsync("assets/Shaders/BlinnPhongFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/WindshieldFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/CarpaintFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/MirrorFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
@@ -416,7 +445,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     }
 
     auto [presentationVert, presentationFrag, vert, pbrFragmentShader, blinnPhongFragmentShader,
-          windshieldFragmentShader, carpaintFragmentShader, depthVertexShader,
+          windshieldFragmentShader, carpaintFragmentShader, mirrorFragmentShader, depthVertexShader,
           depthFragmentShader, colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader,
           compositeFragmentShader, worldRainFragmentShader, volumetricFogFragmentShader, fogMarchFragmentShader,
           cloudDomeFragmentShader,
@@ -458,6 +487,26 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     orThrow(engine.shader().createShader(
         "carpaint",
         ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = carpaintFragmentShader}));
+
+    // The police light bar's lens (docs/police-lights-brief.md): the pbr shader a second time, with
+    // BEACON_LENS defined and the two sides' colours handed in from PoliceLights.cppm — one statement
+    // of each number, read by the lens through these definitions and thrown on the road by the lamps
+    // through the same constants. Registered under the name the fleet's exporter writes for the bar's
+    // material (`extras.shader = "beacon"`); a fleet without a bar never resolves it.
+    orThrow(engine.shader().createShader(
+        "beacon", ShaderDescriptor{.vertexShaderSource = vert,
+                                   .fragmentShaderSource = pbrFragmentShader,
+                                   .defines = {{"BEACON_LENS", "1"},
+                                               {"BEACON_RED", glslVec3Literal(beaconRed)},
+                                               {"BEACON_BLUE", glslVec3Literal(beaconBlue)}}}));
+
+    // The driver's mirror glass: the rear-facing mirror camera's map, sampled by the surface's own
+    // UVs, and nothing else — no lighting, because a mirror shows what it reflects. Registered
+    // always, like every shader here, and bound to a material only by a scene that built a mirror
+    // camera: the material whose base map is Assetto Corsa's `mirror_placement` is the one, and the
+    // exporter writes no `extras.shader` for it, so the scene names it (CircuitScene).
+    orThrow(engine.shader().createShader(
+        "mirror", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = mirrorFragmentShader}));
 
     // The cascades' depth pass. Position through the light's matrix, nothing written: the target
     // has no colour attachment for a fragment output to reach.
@@ -558,6 +607,14 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                     .blurShader = aoBlurShader,
                     .upsampleShader = aoUpsampleShader,
                     .occlusion = raceengine::AmbientOcclusion{.strength = 1.4f, .radius = 40.0f}}));
+
+    // The prepass records the world and the car — every layer the frame shades — and not the
+    // mirror's own layer: the traffic's capped level of detail stands there as a second copy of a
+    // car the frame already draws, and a second surface in the shared depth would z-reject the
+    // first (pre-Z compares LessOrEqual against exactly this buffer). Today the two masks name the
+    // same entities, so this is byte-identical; it is stated so the day the mirror layer is
+    // populated nothing has to be found.
+    camera.ambientOcclusion.layerMask = worldLayer | carLayer;
 
     // Occlusion culling, off the buffer the prepass above just became responsible for. It is the
     // only thing in this rig that makes the frame cheaper rather than better, and it exists for one
@@ -846,6 +903,105 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     const auto frameWidth = engine.memoryStorage().bufferAttachments.get(worldColour.front()).width;
     const auto frameHeight = engine.memoryStorage().bufferAttachments.get(worldColour.front()).height;
 
+    // **The driver's mirror** (docs/driver-mirrors-brief.md): one more scene camera, looking straight
+    // back along the car from the driver's eye, drawn into a map of its own that the mirror glass
+    // samples. Created here — after the world camera and *before* the car camera — because the
+    // scene's cameras record in the order they were appended: the mirror view has to be on the
+    // command buffer before the car view draws the glass that samples it, or the glass shows the
+    // previous frame.
+    //
+    // It is the simplified pipeline, by construction rather than by flags: a scene camera with no
+    // ambient occlusion has no prepass and no gather, one with no meter and no bloom has no post
+    // chain, and one whose target is not the frame's is never tone mapped — its colour attachment
+    // holds linear radiance, which is what a mirror surface reflects into the frame that *is* tone
+    // mapped. What it keeps is the scene shaders themselves, the cascades (the main view's, read
+    // through `shadowSplitScale`) and the probes. What it forgoes with the prepass is the occlusion
+    // culler, so it is frustum-culled alone; and the fullscreen fog, so the rear view is unfogged.
+    //
+    // The map is 2:1 because Assetto Corsa's `mirror_placement` layout is, and every mirror
+    // surface's UVs were authored on that layout; 1024x512 is about the on-screen size of the centre
+    // mirror at 1440p, so the surface neither minifies badly nor pays for texels it cannot show. The
+    // horizontal field of view is 90 degrees — the centre mirror's UVs span 86 % of the map, which
+    // makes it a 77-degree mirror, and the door mirrors' 17-31 % make them 15-28 — wider than any
+    // real mirror, which is the compromise one shared render makes and the one AC makes too.
+    // Placed; the seat may move it.
+    Camera* mirrorCamera = nullptr;
+    if (driverMirrors)
+    {
+        constexpr auto mirrorWidth = 1024u;
+        constexpr auto mirrorHeight = 512u;
+        constexpr auto mirrorHorizontalFieldOfView = 90.0f;
+        constexpr auto mirrorAspect = static_cast<float>(mirrorWidth) / static_cast<float>(mirrorHeight);
+        const auto mirrorVerticalFieldOfView =
+            glm::degrees(2.0f * glm::atan(glm::tan(glm::radians(mirrorHorizontalFieldOfView * 0.5f)) / mirrorAspect));
+
+        // Half-float, because the map is radiance the frame's own exposure and tone curve will
+        // read; cleared once to black so nothing ever samples an undefined image — the glass is
+        // drawn after the mirror view in the same frame, but the world view before it already
+        // names the map in its set. Depth of its own: nothing shares this view's visibility.
+        const auto mirrorFbo = orThrow(engine.fbo().create(raceengine::CreateFboDTO{
+            .type = raceengine::FboType::Planar,
+            .attachments = {raceengine::CreateFboAttachmentDTO{.width = mirrorWidth,
+                                                               .height = mirrorHeight,
+                                                               .type = raceengine::FboAttachmentType::Color,
+                                                               .captureFormat = raceengine::TextureFormat::RGBA,
+                                                               .internalFormat = raceengine::TextureFormat::RGBA16F,
+                                                               .initialColour = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)},
+                            raceengine::CreateFboAttachmentDTO{
+                                .width = mirrorWidth,
+                                .height = mirrorHeight,
+                                .type = raceengine::FboAttachmentType::Depth,
+                                .captureFormat = raceengine::TextureFormat::DepthComponent,
+                                .internalFormat = raceengine::TextureFormat::DepthComponent}}}));
+        const auto mirrorColour = engine.fbo().getAttachmentsOfType(
+            engine.memoryStorage().frameBuffers.get(mirrorFbo), FboAttachmentType::Color);
+        if (mirrorColour.empty())
+        {
+            raceengine::fail("the driver's mirror target has no colour attachment");
+        }
+
+        auto& mirror = orThrow(engine.scene().createCamera(
+                                   scene, raceengine::CreateCameraDTO{.debugName = "mirror", .output = mirrorFbo}))
+                           .get();
+        // Its own resolution, whatever the window does.
+        mirror.tracksWindowSize = false;
+        // The world and the mirror's own stand-ins, and **not the player's car** (Dominic,
+        // 2026-09-11): the glass shows the road behind and nothing of the body it is bolted to.
+        mirror.layerMask = worldLayer | mirrorLayer;
+        // Opaque then blended in one view: the traffic's glass is blended, and a car with no
+        // windows in the mirror is a car you can see through.
+        mirror.partition = raceengine::DrawPartition::All;
+        mirror.clearColour = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        mirror.aspectRatio = mirrorAspect;
+        mirror.fieldOfView = mirrorVerticalFieldOfView;
+        mirror.nearClippingPlane = camera.nearClippingPlane;
+        mirror.farClippingPlane = camera.farClippingPlane;
+        engine.camera().setRoll(mirror, 0, 1, 0);
+        // Read by no pass — there is no chain — but a camera states all three legs.
+        mirror.iso = camera.iso;
+        mirror.aperture = camera.aperture;
+        engine.camera().setExposure(mirror, camera.exposure);
+
+        // **The main view's cascades, read backwards.** The shader picks a cascade by the fragment's
+        // depth in front of *this* eye against the splits, and the splits were measured along the
+        // pose camera's axis. A cascade's map is the light-space square around its slice's bounding
+        // sphere, and at this rig's field of view (75 degrees, 16:9) every slice's sphere is centred
+        // on the slice's far plane with a radius of 1.565 times that far distance — so cascade i
+        // reaches back past the eye by 0.565 of its own split. A mirror fragment at rear depth d
+        // must therefore pick a cascade whose split is past d / 0.565, and this scale is what turns
+        // its own depth into that choice: 0.45 rather than 0.565, because a fragment at the corner
+        // of the mirror's frustum is also 1.12 d off the axis and the sphere is what bounds it there
+        // — (0.45 + 1)^2 + 1.25 x 0.45^2 = 2.36 against 2.45. The price is that the mirror shades
+        // lit beyond 0.45 x 2000 units, ninety metres behind the car, and that its shadows are the
+        // main view's texels — 6.5 mm out to 2.5 m behind the eye, 30 cm past 40 m. A cascade set
+        // of the mirror's own is the upgrade if the seat finds that coarse; it costs two depth
+        // passes a frame.
+        mirror.shadowSplitScale = 0.45f;
+
+        engine.scene().setMirrorMap(scene, mirrorColour.front());
+        mirrorCamera = &mirror;
+    }
+
     // The car layer's buffer: colour of its own, the frame's shared depth — the prepass's since
     // pre-Z, which already holds the car's own geometry as well as the world's. Transparent black
     // where nothing drew, because its alpha is what the composite lays it over the world by.
@@ -956,6 +1112,10 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                             .get();
     frameCamera.tracksWindowSize = true;
     frameCamera.partition = raceengine::DrawPartition::BlendedOnly;
+    // Every layer the frame is made of, and not the mirror's: its blended draws — the stand-in
+    // traffic's glass — belong to the mirror view alone. Byte-identical today, for the reason the
+    // prepass mask is.
+    frameCamera.layerMask = worldLayer | carLayer;
     frameCamera.loadColour = true;
     frameCamera.loadDepth = true;
     engine.camera().setRoll(frameCamera, 0, 1, 0);
@@ -1097,6 +1257,16 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
         }
     }
 
+    // And the near two draw the world and the car, and not the mirror's stand-ins: a second copy
+    // of a car casts the shadow the first already casts, for the price of drawing it twice.
+    for (auto index = 0u; index < 2u && index < scene.shadows.cascades.size(); index++)
+    {
+        if (scene.shadows.cascades[index].camera != nullptr)
+        {
+            scene.shadows.cascades[index].camera->layerMask = worldLayer | carLayer;
+        }
+    }
+
     // The air, which is what gives distance a cost and what the god rays are made of.
     //
     // It is here rather than in a scene for the reason the tone curve is: two scenes standing in
@@ -1150,6 +1320,14 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                                .scatteringAlbedo = glm::vec3(0.9f),
                                .anisotropy = 0.7f}));
 
+    // The eye's sky stop, beside the fog because it is the other thing between the sky and the eye
+    // (2026-09-12). The meter exposes the street and opens the outdoor dial over it, and the sky —
+    // 0.7 of a sunlit grey at the zenith, which is physical — lands past the tone curve's ceiling
+    // and prints white. A probe photographs the true sky whatever this says (VulkanRenderer writes
+    // the gain as one in a capture), so the ambient light does not move. docs/renderer.md, *Sky and
+    // sun*.
+    orThrow(engine.scene().setSkyEyeStops(scene, air.skyEyeStops));
+
     // The rain beside the fog: weather the scene states once and every reader branches on.
     orThrow(engine.scene().setRain(scene, air.rain));
 
@@ -1165,6 +1343,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     return RigBuild{.sky = &skyEntity,
                     .carCamera = &carCamera,
                     .frameCamera = &frameCamera,
+                    .mirrorCamera = mirrorCamera,
                     .composite = composite,
                     .cloudCoverage = effectiveCloudCoverage,
                     .cloudPass = domePass,

@@ -14,6 +14,51 @@ import raceengine;
 namespace osr
 {
 
+// The driver's eye, in the chassis body frame, metres. The body's origin is the design contact
+// patch under the wheelbase midpoint, so `y` is height above the road and not above the floor.
+//
+// Placeholder in the sense every figure in this repository's vehicle data is: a Golf's H-point is
+// about 0.52 m up with roughly 0.63 m of eye above it, and the seat sits a little behind the
+// wheelbase midpoint.
+//
+// The **sign was measured rather than reasoned**, and it was wrong the first way round: seated at
+// -0.37 the rendered wheel sat against the left edge of the frame with the glovebox to the right,
+// which is the view from the passenger seat.
+//
+// It is named for the side it is on rather than for a sign, because the sign is only meaningful
+// once you know that **+x is the car's left** — see `outboardSign`, which is the one place that
+// is stated and which spent a day being stated wrongly in five. A left-hand-drive car puts its
+// driver on the left, so the seat is at +0.37. The number here never moved; what changed is that
+// the rest of the codebase now agrees with the picture this was measured off.
+//
+// At namespace scope rather than inside the controller because two cameras stand here: the
+// driver's own, and the mirror's (aimDriverMirror below), which is the same eye looking the
+// other way.
+constexpr double driverEyeLeft = 0.37;
+constexpr double driverEyeHeight = 1.15;
+constexpr double driverEyeAhead = -0.10;
+
+// The driver's mirror camera: the driver's eye, looking straight back along the car
+// (docs/driver-mirrors-brief.md).
+//
+// **From the eye, not from the glass, and along the body, not along the gaze.** A flat mirror
+// shows what a camera standing at the viewer's reflection would see, and for the centre mirror
+// that reflection is the eye itself looking back through the mirror's frame — so the eye is the
+// honest origin for the one shared render Assetto Corsa's placement layout asks for, and the door
+// mirrors take the same picture as the compromise that layout is. The direction is the body's own
+// backward axis: a driver who looks left does not move what the mirror shows, and the mirror is
+// bolted to the car.
+//
+// It takes the body's attitude whole, roll included, and undamped: the glass is rigid to the car,
+// so the world in it tilts exactly as the car does, where the head above it is a low pass on the
+// seat (CockpitCameraController). Pitched down a few degrees, because a mirror is aimed to show
+// the road behind and not the sky over it — a level camera puts the horizon across the middle of
+// the glass, and a real one sits around two fifths from the top. Placed; the seat's to move.
+//
+// Written every tick and the sole writer of the mirror's pose, on the same terms as the two
+// controllers. Whatever camera the driver is looking through, the mirror looks back along the car.
+export void aimDriverMirror(raceengine::Engine& engine, Camera& mirror, const raceengine::VehicleState& state);
+
 // The view from the driver's seat, and it is the one the feel of a car is judged from.
 //
 // **It takes the body's whole attitude where the chase camera takes only its heading**, and that is
@@ -56,25 +101,10 @@ namespace osr
 // of both, and it now writes the up vector on the same terms. A scene picks one camera controller.
 export class CockpitCameraController
 {
-    // The driver's eye, in the chassis body frame, metres. The body's origin is the design contact
-    // patch under the wheelbase midpoint, so `y` is height above the road and not above the floor.
-    //
-    // Placeholder in the sense every figure in this repository's vehicle data is: a Golf's H-point is
-    // about 0.52 m up with roughly 0.63 m of eye above it, and the seat sits a little behind the
-    // wheelbase midpoint.
-    //
-    // The **sign was measured rather than reasoned**, and it was wrong the first way round: seated at
-    // -0.37 the rendered wheel sat against the left edge of the frame with the glovebox to the right,
-    // which is the view from the passenger seat.
-    //
-    // It is named for the side it is on rather than for a sign, because the sign is only meaningful
-    // once you know that **+x is the car's left** — see `outboardSign`, which is the one place that
-    // is stated and which spent a day being stated wrongly in five. A left-hand-drive car puts its
-    // driver on the left, so the seat is at +0.37. The number here never moved; what changed is that
-    // the rest of the codebase now agrees with the picture this was measured off.
-    static constexpr double eyeLeft = 0.37;
-    static constexpr double eyeHeight = 1.15;
-    static constexpr double eyeAhead = -0.10;
+    // The eye, stated once above for both cameras that stand at it.
+    static constexpr double eyeLeft = driverEyeLeft;
+    static constexpr double eyeHeight = driverEyeHeight;
+    static constexpr double eyeAhead = driverEyeAhead;
 
     // Seconds, and stated in seconds rather than as a fraction per tick so that it means the same
     // thing at any frame rate — the same reason `ChaseCameraController` states its two lags that
@@ -107,6 +137,35 @@ public:
 
 namespace osr
 {
+
+void aimDriverMirror(raceengine::Engine& engine, Camera& mirror, const raceengine::VehicleState& state)
+{
+    // Degrees below the body's own backward axis. Two fifths from the top of a 53-degree-tall
+    // picture is a horizon 5 degrees above its centre, which is this much pitch.
+    constexpr auto mirrorPitchDegrees = 5.0;
+
+    const auto seat = glm::dvec3(driverEyeLeft, driverEyeHeight, driverEyeAhead);
+    const auto eye = raceengine::bodyToWorld(state.chassis, seat);
+
+    const auto forward = state.chassis.orientation * glm::dvec3(0.0, 0.0, 1.0);
+    const auto bodyUp = state.chassis.orientation * glm::dvec3(0.0, 1.0, 0.0);
+
+    // Straight back, then tipped towards the road about the body's own lateral axis: the backward
+    // axis rotated towards -up by the pitch, which keeps the camera's up the body's up. `lookAt`
+    // re-orthogonalises the pair, so the small non-orthogonality this leaves is nothing.
+    const auto pitch = glm::radians(mirrorPitchDegrees);
+    const auto backward = -forward * std::cos(pitch) - bodyUp * std::sin(pitch);
+
+    const auto placedEye = toWorldUnits(eye);
+    const auto direction = glm::normalize(directionToWorldUnits(backward));
+
+    engine.camera().setPosition(mirror, static_cast<float>(placedEye.x), static_cast<float>(placedEye.y),
+                                static_cast<float>(placedEye.z));
+    engine.camera().setDirection(mirror, static_cast<float>(direction.x), static_cast<float>(direction.y),
+                                 static_cast<float>(direction.z));
+    engine.camera().setRoll(mirror, static_cast<float>(bodyUp.x), static_cast<float>(bodyUp.y),
+                            static_cast<float>(bodyUp.z));
+}
 
 void CockpitCameraController::update(Camera& camera, const raceengine::VehicleState& state, const float delta)
 {

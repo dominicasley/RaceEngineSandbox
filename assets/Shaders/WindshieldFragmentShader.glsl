@@ -901,7 +901,7 @@ float grimeSpecks(vec2 p, uint seed, float density)
 // metres. rgb is the glare gain, alpha the coverage — the same contract the map it replaces had.
 vec4 windscreenGrime(vec2 metres)
 {
-    // Where it gathers, stretched across the glass the way a blade leaves it.
+    // Where it gathers, stretched across the glass the way a blade leaves it.  
     float blotches = grimeOctaves(metres * grimeBlotchesPerMetre * grimeBlotchStretch, 11u);
 
     // How it breaks up within a patch, and the two scales of grit that give it an edge.

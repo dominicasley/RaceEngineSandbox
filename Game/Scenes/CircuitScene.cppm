@@ -1,6 +1,7 @@
 module;
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -27,6 +28,8 @@ import :Simulation;
 import :SimulatedCar;
 import :ProbeCache;
 import :TrackFrame;
+import :TrafficCars;
+import :TrafficDirector;
 import :TrafficNetwork;
 import :WiperController;
 
@@ -125,6 +128,10 @@ private:
     bool freeCameraEngaged = false;
     bool cameraKeyHeld = false;
     bool poseKeyHeld = false;
+    // The restart key, level to edge for the same reason.
+    bool restartKeyHeld = false;
+    // The number keys one to five — the police's wanted level — level to edge likewise.
+    std::array<bool, 5> wantedKeyHeld{};
 
     // Print where this camera stands and which way it points, as the command line that puts a
     // camera back there. Level to edge for the reason the two keys above are.
@@ -144,6 +151,10 @@ private:
     // is this scene's to run because only it knows which view is live.
     Camera* carCamera = nullptr;
     Camera* frameCamera = nullptr;
+    // The driver's mirror camera, when this run has one — a cockpit run with `OSR_MIRRORS` not off —
+    // and null otherwise (docs/driver-mirrors-brief.md). Aimed every tick from the car's own
+    // attitude, whatever camera the driver is looking through.
+    Camera* mirrorCamera = nullptr;
     raceengine::Resource<raceengine::PostProcess> composite{};
     // Built in the body rather than the initialiser list because both need the "pbr" shader, which
     // the render rig creates down there out of a file this scene awaits.
@@ -166,6 +177,18 @@ private:
     // down" inside a couple of ticks and the droplets visibly wiggle as they re-aim. The shader
     // cannot hold this: it is stateless by design, so the lag lives here, where state is allowed.
     double rainDampedSpeed = 0.0;
+
+    // The drawn half of traffic, and the poses the simulation last published. Empty on a circuit,
+    // and empty on a city until the track states a fleet asset — the cars are simulated and
+    // collidable either way.
+    std::optional<TrafficCars> trafficCars;
+    std::vector<TrafficSnapshot> trafficPoses;
+
+    // The heard half of traffic: which handful of the poses above are audible, decided here from the
+    // camera's stand, and handed to the audio service as placed voices. Absent when the run says
+    // `OSR_TRAFFIC_AUDIO=off`, the track states no fleet, or no fleet car has a recordings folder.
+    std::optional<raceengine::TrafficVoiceAllocator> trafficVoices;
+    std::vector<raceengine::TrafficAudioCar> trafficAudioCars;
 
     // The stalk. Off until the driver asks for it, like every other thing on this car that a real
     // one has switched on — and off is what keeps both gates byte-identical.
@@ -412,6 +435,7 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                     RigAir{.baseHeight = static_cast<float>(track.fogBaseHeightMetres *
                                                                             worldUnitsPerMetre),
                                            .densityScale = static_cast<float>(options.fogDensityScale),
+                                           .skyEyeStops = static_cast<float>(options.skyEyeStops),
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
                                            .rain = static_cast<float>(options.rainIntensity),
                                            .clouds = static_cast<float>(options.cloudCoverage),
@@ -420,10 +444,15 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                            .cloudBlendWeight = cloudBlend,
                                            .cloudMarchInterval = options.cloudMarchInterval,
                                            .cloudMarchStrips = options.cloudMarchStrips},
-                                    options.occlusionCulling);
+                                    options.occlusionCulling,
+                                    // The mirrors are the cockpit's: a chase or free camera looks at
+                                    // the car's mirrors from outside, where they show the asset's
+                                    // own glass, and the driving gate captures the chase camera.
+                                    options.camera == CameraChoice::Cockpit && options.mirrors);
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;
+    mirrorCamera = rig.mirrorCamera;
     composite = rig.composite;
     cloudCoverage = rig.cloudCoverage;
     cloudMarch.bind(rig);
@@ -587,6 +616,157 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
 
     car.emplace(engine, scene);
 
+    // The mirror glass, bound to the mirror shader when there is a mirror camera to fill it.
+    //
+    // **Identified by Assetto Corsa's own convention and not by this mod's.** AC puts its one rear
+    // view on every surface whose material carries the `mirror_placement` texture — the layout
+    // template a modder places each mirror's UVs on — and the Golf's three mirror surfaces are the
+    // three meshes on the material that names it. The exporter writes no `extras.shader` for that
+    // material (its KN5 shader is the plain `ksPerPixel`), so the resolution the importer would have
+    // done is done here, once, on the loaded model: the declared handle the draw path picks its
+    // pipeline from, and `shader`, which every other reader expects set. Materials are the model's
+    // shared storage, and the player's car is the only renderable built from this model. Without a
+    // mirror camera the material is left exactly as the asset shipped it, which is the chase view
+    // both goldens hold: the placement template drawn as the glass.
+    if (mirrorCamera != nullptr)
+    {
+        // The door mirrors' curve (docs/driver-mirrors-brief.md §6). A mirror surface whose centre
+        // sits this far off the car's centreline, in the model's own metres, is a door mirror and
+        // is drawn as a convex sphere of this radius; nearer the centreline it is the centre mirror
+        // and stays flat. The radius is ECE R46's floor for a Class III main exterior mirror
+        // (r >= 1200 mm), placed on both doors alike — the real car's passenger side is aspheric
+        // beyond an inner spherical zone, which this does not do. Both numbers are Dominic's to move.
+        constexpr auto doorMirrorOutboardMetres = 0.5;
+        constexpr auto doorMirrorRadiusMetres = 1.2;
+
+        const auto mirrorShader = shaderNamed(engine, "mirror");
+        const auto modelKey = car->renderableModel().model;
+        const auto* model = engine.memoryStorage().models.find(modelKey);
+        auto remapped = 0;
+        auto curved = 0;
+        std::vector<raceengine::Resource<raceengine::Material>> mirrorMaterials;
+
+        if (model != nullptr)
+        {
+            for (const auto& key : model->materials)
+            {
+                engine.memoryStorage().materials.mutate(
+                    key,
+                    [&](raceengine::Material& material)
+                    {
+                        auto isMirror = material.name.find("mirror_position") != std::string::npos;
+
+                        if (material.albedo.has_value())
+                        {
+                            // Textures nest under materials in the storage order the engine states
+                            // (models -> materials -> textures), so a borrow here is inside the rule.
+                            const auto* texture = engine.memoryStorage().textures.find(material.albedo.value());
+                            isMirror = isMirror ||
+                                       (texture != nullptr && texture->name.find("mirror_placement") != std::string::npos);
+                        }
+
+                        if (!isMirror)
+                        {
+                            return;
+                        }
+
+                        material.declaredShaderHandle = mirrorShader;
+                        material.shader = mirrorShader;
+                        mirrorMaterials.push_back(key);
+                        remapped++;
+                    });
+            }
+
+            // The curve is per *surface* and the material is the one thing the draw path resolves
+            // per primitive, so each door mirror's primitive gets a material of its own: a copy of
+            // the mirror material with no textures (the shader samples none of them, and a copy
+            // that named them would be a second owner of the model's textures) carrying the glass's
+            // centre in the mesh's own space, the centre of its UV island — the axis the modder
+            // aimed it along, read off the vertex data at load — and the radius. Which surfaces are
+            // decided first and re-pointed after, so nothing is mutated while it is being walked.
+            struct DoorMirror
+            {
+                raceengine::Resource<raceengine::Mesh> mesh;
+                std::size_t primitive;
+                raceengine::Resource<raceengine::Material> glass;
+            };
+            std::vector<DoorMirror> doorMirrors;
+
+            for (const auto& meshKey : model->meshes)
+            {
+                const auto* mesh = engine.memoryStorage().meshes.find(meshKey);
+
+                if (mesh == nullptr)
+                {
+                    continue;
+                }
+
+                for (std::size_t index = 0; index < mesh->meshPrimitives.size(); index++)
+                {
+                    const auto& primitive = mesh->meshPrimitives[index];
+
+                    if (!primitive.material.has_value() || !primitive.uvBoundsKnown ||
+                        std::find(mirrorMaterials.begin(), mirrorMaterials.end(), primitive.material.value()) ==
+                            mirrorMaterials.end())
+                    {
+                        continue;
+                    }
+
+                    // The glass's centre in the car's frame, through the node transform the loader
+                    // baked into the mesh; x is the car's left in the exporter's frame, and the
+                    // eye's own constants stand in the same one (CockpitCameraController).
+                    const auto centreInCar = glm::vec3(mesh->modelMatrix * glm::vec4(primitive.boundsCentre, 1.0f));
+
+                    if (std::abs(centreInCar.x) < static_cast<float>(doorMirrorOutboardMetres))
+                    {
+                        continue;
+                    }
+
+                    const auto* source = engine.memoryStorage().materials.find(primitive.material.value());
+
+                    if (source == nullptr)
+                    {
+                        continue;
+                    }
+
+                    auto glass = *source;
+                    glass.name += centreInCar.x > 0.0f ? " (left door mirror)" : " (right door mirror)";
+                    glass.albedo.reset();
+                    glass.metallicRoughness.reset();
+                    glass.normal.reset();
+                    glass.occlusion.reset();
+                    glass.emissive.reset();
+                    glass.environment.reset();
+                    glass.blendMask.reset();
+                    glass.detail = {};
+                    glass.textures.clear();
+                    glass.mirror = raceengine::MirrorGlass{
+                        .centre = primitive.boundsCentre,
+                        .islandCentre = glm::fract((primitive.uvBoundsMin + primitive.uvBoundsMax) * 0.5f),
+                        .radius = static_cast<float>(doorMirrorRadiusMetres * worldUnitsPerMetre)};
+
+                    doorMirrors.push_back(DoorMirror{.mesh = meshKey,
+                                                     .primitive = index,
+                                                     .glass = engine.memoryStorage().materials.add(std::move(glass))});
+                }
+            }
+
+            for (const auto& door : doorMirrors)
+            {
+                engine.memoryStorage().models.mutate(modelKey, [&](raceengine::Model& owner)
+                                                     { owner.materials.push_back(door.glass); });
+                engine.memoryStorage().meshes.mutate(door.mesh,
+                                                     [&](raceengine::Mesh& mesh)
+                                                     { mesh.meshPrimitives[door.primitive].material = door.glass; });
+                curved++;
+            }
+        }
+
+        engine.log().info("Driver mirrors: {} material(s) of the car drawn as the mirror glass, from a {}x{} rear view "
+                          "the traffic shows at level {} or coarser; {} door mirror surface(s) convex at {} m",
+                          remapped, 1024, 512, options.mirrorLevelFloor, curved, doorMirrorRadiusMetres);
+    }
+
     // The first authored grid slot, position and heading both. Not the AI line: its first point is a
     // racing line a metre from the right-hand edge of an eleven-metre road, and its height is the
     // recording car's own reference height rather than the tarmac — three quarters of a metre of
@@ -617,7 +797,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         &simulation->add(slot.position, glm::radians(slot.yaw), options.driver, 0.001 * options.beltBridgingMillimetres,
                          options.geometricLoadPath, options.drivelineReaction, options.tyreThermal,
                          options.tyreContactConductance, options.tyreRoadAreaFraction, options.tyreIdealTemperature,
-                         options.tyrePressure, options.brakeThermal, startingTyreTemperature, ambient, options.assists);
+                         options.tyrePressure, options.brakeThermal, options.kerbContact, options.frameAcceleration,
+                         options.rearWheelRate, startingTyreTemperature, ambient, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
 
     // The image-based lighting graph, and it is one node rather than three.
@@ -753,6 +934,123 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         engine.log().info("Traffic network {}: {} lanes, {} m; {} probe stands, {} probes placed, cache {}",
                           track.trafficAsset, traffic->lanes.size(), traffic->counts.totalLaneLengthMetres, standCount,
                           scene.probes.size(), restored ? "restored" : "to be baked");
+    }
+
+    // The city's traffic, if this track has lanes and this run wants any. It goes to the simulation
+    // rather than being held here, because it is written every tick by that thread — see
+    // `Simulation::enableTraffic`.
+    if (traffic && options.traffic)
+    {
+        auto settings = TrafficSettings{};
+        settings.densityPerKilometre = options.trafficDensity.value_or(track.trafficDensityPerKilometre);
+        settings.logPath = options.trafficLog;
+        settings.bodyCount =
+            track.trafficFleet.empty() ? std::uint8_t{1} : static_cast<std::uint8_t>(track.trafficFleet.size());
+
+        // Which of the fleet is the patrol car, by name: a fleet without one has no police and the
+        // city seeds exactly as it did before there were any (docs/police-pursuit-brief.md).
+        for (auto index = std::size_t{0}; index < track.trafficFleet.size(); index++)
+        {
+            if (track.trafficFleet[index].name == "charger")
+            {
+                settings.policeBody = static_cast<std::uint8_t>(index);
+            }
+        }
+
+        // The cars drawn at the nearest level of detail are rigid bodies on their lanes. That level
+        // is measured from the camera and this radius from the player's car, and the chase camera
+        // sits some metres behind the car, so the radius carries a margin past the level's distance;
+        // the way out is further still, so a car does not flicker between the tiers at the boundary.
+        if (!track.trafficLevelMetres.empty())
+        {
+            settings.embodyRadiusMetres = track.trafficLevelMetres.front() + 6.0;
+            settings.disembodyRadiusMetres = settings.embodyRadiusMetres + 10.0;
+        }
+
+        // The navigation mesh, for the police (docs/pursuit-navigation-brief.md, stage 1b): loaded
+        // here, once, beside the other track assets, and handed to the traffic director with the
+        // network. One line says what the bake carried and what the load cost, because the load is
+        // 33 MB of numbers and the day it crosses a second is the day it wants a binary cache.
+        auto navmesh = std::optional<raceengine::NavMesh>{};
+
+        if (!track.navmeshAsset.empty())
+        {
+            navmesh.emplace(orThrow(raceengine::loadNavMesh(std::string(track.navmeshAsset))));
+
+            auto areas = std::string();
+            for (const auto& area : navmesh->areas)
+            {
+                areas += (areas.empty() ? "" : ", ") + area.key + " " + std::to_string(area.costHint).substr(0, 3);
+            }
+
+            engine.log().info("Navmesh {}: {} polygons kept ({} dropped in {} minor components), {} links ({} dropped "
+                              "with them), areas {}; loaded in {:.0f} ms (read {:.0f}, parse {:.0f}, build {:.0f})",
+                              track.navmeshAsset, navmesh->polygonCount(), navmesh->droppedPolygons,
+                              navmesh->droppedComponents, navmesh->linkCount(), navmesh->droppedLinks, areas,
+                              1000.0 * (navmesh->timing.readSeconds + navmesh->timing.parseSeconds +
+                                        navmesh->timing.buildSeconds),
+                              1000.0 * navmesh->timing.readSeconds, 1000.0 * navmesh->timing.parseSeconds,
+                              1000.0 * navmesh->timing.buildSeconds);
+        }
+
+        simulation->enableTraffic(*traffic, settings, std::move(navmesh));
+
+        // And the pool that draws it. A track that states no fleet gets a pool of nothing, says so
+        // once, and the traffic goes on driving and colliding unseen.
+        // The mirror's floor on a car's detail is in play only when there is a mirror to draw it;
+        // the police light bars are `OSR_POLICE_LIGHTS` (docs/police-lights-brief.md).
+        trafficCars.emplace(engine, scene, track.trafficFleet, track.trafficLevelMetres, track.trafficDrawnCars,
+                            mirrorCamera != nullptr ? options.mirrorLevelFloor : std::size_t{0},
+                            options.policeLights);
+
+        // And the sound of it. One bank per body shape, in the fleet's own order because
+        // `TrafficSnapshot::body` indexes that order; a car with no folder keeps its place and drives
+        // past silently. Not fatal, for the reason the player's own bank is not.
+        if (options.trafficAudio && !track.trafficFleet.empty())
+        {
+            auto fleet = std::vector<raceengine::TrafficFleetCar>{};
+            auto ranges = std::vector<raceengine::TrafficEngineRange>{};
+            fleet.reserve(track.trafficFleet.size());
+            ranges.reserve(track.trafficFleet.size());
+
+            for (const auto& model : track.trafficFleet)
+            {
+                fleet.push_back(raceengine::TrafficFleetCar{.name = std::string(model.name),
+                                                            .audioDirectory = std::string(model.audio),
+                                                            .idleRpm = model.idleRpm,
+                                                            .limiterRpm = model.limiterRpm});
+                ranges.push_back(
+                    raceengine::TrafficEngineRange{.idleRpm = model.idleRpm, .limiterRpm = model.limiterRpm});
+            }
+
+            auto traffic_settings = raceengine::TrafficAudioSettings{};
+
+            if (const auto loaded = engine.audio().loadTrafficFleet(fleet, traffic_settings.voices); !loaded)
+            {
+                engine.log().info("No traffic audio: {}", loaded.error());
+            }
+            else
+            {
+                trafficVoices.emplace(traffic_settings, std::move(ranges));
+
+                // And the siren, the one recording the fleet's patrol car states. Not fatal either:
+                // police that chase silently are a thing to hear about once, not a reason to stop.
+                for (const auto& model : track.trafficFleet)
+                {
+                    if (model.siren.empty())
+                    {
+                        continue;
+                    }
+
+                    if (const auto sirenLoaded = engine.audio().loadSiren(std::string(model.siren)); !sirenLoaded)
+                    {
+                        engine.log().info("No siren: {}", sirenLoaded.error());
+                    }
+
+                    break;
+                }
+            }
+        }
     }
 
     // Nothing ticks until the world is whole. Started before the update callback is registered for
@@ -962,6 +1260,50 @@ void CircuitScene::update(float delta)
     // After the tick that may have broken something and before anything draws it.
     followBrokenProps();
 
+    // And the traffic, on the same terms: the newest poses the simulation got through with, and the
+    // pool reassigned to whichever of them are nearest the eye. Metres here, because the camera is
+    // in world units and traffic is in the physics frame — `fromWorldUnits` is the seam.
+    if (trafficCars)
+    {
+        simulation->collectTraffic(trafficPoses);
+
+        trafficCars->update(
+            trafficPoses, toMetres(glm::dvec3(camera.position.x, camera.position.y, camera.position.z)));
+
+        // What the ear gets of them. The listener stands where the camera does and rides what the
+        // camera rides: a chase or cockpit camera is bolted to the car and moves at its speed, which
+        // is what the Doppler shift is relative to; a free or fixed camera hovers. The camera's
+        // direction is the listener's forward and the world's up is its up — the backend squares the
+        // pair. On the engine's tick rather than the simulation's, like the player's own sound.
+        if (trafficVoices)
+        {
+            trafficAudioCars.clear();
+            trafficAudioCars.reserve(trafficPoses.size());
+
+            for (const auto& pose : trafficPoses)
+            {
+                trafficAudioCars.push_back(raceengine::TrafficAudioCar{
+                    .id = pose.id,
+                    .body = pose.body,
+                    .positionMetres = pose.positionMetres,
+                    .velocityMetresPerSecond = pose.velocityMetresPerSecond,
+                    .accelerationMetresPerSecondSquared = pose.accelerationMetresPerSecondSquared,
+                    .siren = pose.siren});
+            }
+
+            const auto riding = !freeCameraEngaged && configuredCamera != CameraChoice::Fixed;
+
+            auto listener = raceengine::AudioListener{};
+            listener.positionMetres = toMetres(glm::dvec3(camera.position));
+            listener.velocityMetresPerSecond = riding ? player->vehicle().chassis.linearVelocity : glm::dvec3(0.0);
+            listener.forward = glm::dvec3(camera.direction);
+            listener.up = glm::dvec3(0.0, 1.0, 0.0);
+
+            trafficVoices->update(trafficAudioCars, listener, static_cast<double>(raceengine::Engine::fixedTimeStep));
+            engine.audio().updateTraffic(listener, trafficVoices->voices());
+        }
+    }
+
     // The wipers, on the engine's own clock rather than a second one kept here: the shader inverts
     // the same sweep law to work out what the blade cleared, so the two must agree about what time
     // it is or the clearing lands where the blade is not.
@@ -1044,6 +1386,33 @@ void CircuitScene::update(float delta)
 
     poseKeyHeld = poseKey;
 
+    // R: back to the grid, the traffic reseeded, the police's meter cleared. Taken on the simulation's
+    // thread at the top of its next tick, which is the only thread that may move a car.
+    const auto restartKey = engine.window().keyPressed(raceengine::Key::R);
+    if (restartKey && !restartKeyHeld)
+    {
+        simulation->requestRestart();
+    }
+
+    restartKeyHeld = restartKey;
+
+    // 1 to 5: the police's meter put at that level, a chase started if none is on. Taken on the
+    // simulation's thread like the restart (docs/police-driving-brief.md §8).
+    constexpr auto wantedKeys =
+        std::array{raceengine::Key::One, raceengine::Key::Two, raceengine::Key::Three, raceengine::Key::Four,
+                   raceengine::Key::Five};
+
+    for (auto index = std::size_t{0}; index < wantedKeys.size(); index++)
+    {
+        const auto pressed = engine.window().keyPressed(wantedKeys[index]);
+        if (pressed && !wantedKeyHeld[index])
+        {
+            simulation->requestWantedLevel(static_cast<int>(index) + 1);
+        }
+
+        wantedKeyHeld[index] = pressed;
+    }
+
     if (freeCamera)
     {
         freeCamera->update(camera, delta);
@@ -1063,6 +1432,25 @@ void CircuitScene::update(float delta)
     if (cockpitCamera)
     {
         applySplitExposure(engine, camera, *carCamera, *frameCamera, composite);
+    }
+
+    // The mirror, aimed from the car and not from the head, and its picture exposed as the world is:
+    // the same ratio the composite lays the world under the windscreen at, and one whenever the
+    // meters are linked — the free camera, where a mirror glimpsed from outside shows the world at
+    // the frame's own number.
+    if (mirrorCamera != nullptr)
+    {
+        aimDriverMirror(engine, *mirrorCamera, player->vehicle());
+
+        const auto ratio = cockpitCamera ? camera.exposure / std::max(frameCamera->exposure, 1e-6f) : 1.0f;
+        orThrow(engine.scene().setMirrorExposure(scene, ratio));
+
+        // The view the curved door mirrors project their reflections into: the camera as just
+        // aimed, and the tangents of its half fields of view from the vertical one it states and
+        // its aspect — the same two numbers the rig built it from (docs/driver-mirrors-brief.md §6).
+        const auto tanHalfHeight = std::tan(glm::radians(mirrorCamera->fieldOfView) * 0.5f);
+        orThrow(engine.scene().setMirrorView(scene, mirrorCamera->direction, mirrorCamera->roll,
+                                             tanHalfHeight * mirrorCamera->aspectRatio, tanHalfHeight));
     }
 
     // The clouded sky's one scheduled probe re-photograph — on the tick count, and only when the

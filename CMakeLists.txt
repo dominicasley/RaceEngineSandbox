@@ -21,6 +21,7 @@ target_sources(OpenStreetRace PRIVATE
         Game/Entities/CarEntity.cppm
         Game/Entities/DinosaurEntity.cppm
         Game/Entities/GroundPlane.cppm
+        Game/Entities/TrafficCars.cppm
         Game/CloudNoise.cppm
         Game/Game.cppm
         Game/Options.cppm
@@ -32,6 +33,10 @@ target_sources(OpenStreetRace PRIVATE
         Game/Track/ProbeCache.cppm
         Game/Track/RaceTrack.cppm
         Game/Track/TrafficNetwork.cppm
+        Game/Traffic/PoliceCar.cppm
+        Game/Traffic/PoliceLights.cppm
+        Game/Traffic/TrafficDirector.cppm
+        Game/Traffic/TrafficLog.cppm
         Game/Vehicle/PlayerCar.cppm
         Game/Vehicle/SimulatedCar.cppm
         Game/Vehicle/Simulation.cppm

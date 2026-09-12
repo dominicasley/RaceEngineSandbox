@@ -15,10 +15,13 @@ export import :FPSCameraController;
 export import :GroundPlane;
 export import :Options;
 export import :PlayerCar;
+export import :PoliceCar;
 export import :RenderRig;
 export import :SimulatedCar;
 export import :Simulation;
 export import :SteeringController;
+export import :TrafficCars;
+export import :TrafficDirector;
 export import :TrackFrame;
 
 import raceengine;

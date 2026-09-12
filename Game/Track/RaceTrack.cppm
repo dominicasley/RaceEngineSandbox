@@ -79,6 +79,37 @@ export struct GridSlot
     double yaw = 0.0;
 };
 
+// One car in the traffic fleet: the same vehicle at several budgets, and whether its body takes a
+// colour.
+//
+// **`paintable` is not a preference and it is the reason this is a struct rather than a path.** The
+// exporter buckets an AC car's fifty-odd materials into `body`, `glass`, `lights` and `paint`, and
+// writes `extras.shader = "carpaint"` on the last of them — so the engine draws that bucket through
+// `CarpaintFragmentShader`, which reads `RenderableModel::paint` and, **when the renderable states
+// none, samples the material's own base map instead**. That is exactly the seam a liveried car
+// needs: the police Charger's paint bucket *is* its livery, so it states no paint and its texture
+// survives, while an ordinary car states one and gets a colour out of the palette. The two are one
+// flag apart and there is no third case.
+//
+// Levels are nearest first. They are separate files rather than one file with several meshes because
+// a renderable's model is fixed when it is created, so the pool holds one renderable per level on
+// one node and shows whichever the distance asks for.
+export struct TrafficCarModel
+{
+    std::string_view name;
+    std::span<const std::string_view> levels;
+    bool paintable = true;
+    // The folder of recordings the exporter wrote out of this car's bank, one wav per sample, and
+    // the two engine speeds nothing in that folder states — both read off the car's own `engine.ini`
+    // through the exporter's JSON. Empty is a car that drives past silently, and says so once.
+    std::string_view audio{};
+    double idleRpm = 800.0;
+    double limiterRpm = 6500.0;
+    // The siren recording, for the fleet's patrol car and nobody else. Empty is a patrol car that
+    // chases silently, said once (docs/police-pursuit-brief.md).
+    std::string_view siren{};
+};
+
 // Everything that is a property of *which* circuit this is, so that the scene reading it has no
 // opinion about which one it got. Positions are metres, the units both manifests and all of physics
 // are stated in; the scene converts at its own seam.
@@ -137,6 +168,43 @@ export struct TrackDefinition
     // and a scene that finds nothing here simply places no street probes.
     std::string_view trafficAsset;
 
+    // The navigation mesh beside the traffic export, or empty where a track has none: the drivable
+    // area as a graph of rectangles, baked by `~/dev/ac-car-data` for a car (1 m radius, so a route
+    // runs the car's centre with no margin) with every collider solid. Read by the police alone — a
+    // pursuing unit routes over it where the lanes run out (docs/pursuit-navigation-brief.md, stage
+    // 1b) — so it is loaded only when the track has traffic and this run wants it. Mount Panorama
+    // names none: a circuit's police is nobody, and its gates stay blind to this by construction.
+    std::string_view navmeshAsset;
+
+    // The fleet the traffic system draws with, or empty where there is none. The lane graph, the
+    // drivers and the collisions do not need a model: traffic is simulated and collidable with
+    // nothing stated here, and stating one turns it visible.
+    //
+    // A list rather than one car because a street of identical cars reads as a street of identical
+    // cars.
+    //
+    // **The budget these hit is draw calls first and triangles second**: a moving car is recorded
+    // about four times a frame (the world pass, the ambient-occlusion prepass and the two near
+    // shadow cascades, the far pair being cached and car-masked), at ~500 ns each.
+    // `golf_gti_2018.glb` is 806 primitives and 417,187 triangles and was never a candidate.
+    std::span<const TrafficCarModel> trafficFleet{};
+
+    // Where each level of detail gives way to the next, metres from the eye. One shorter than the
+    // longest fleet entry's level list; a car past the last distance is drawn at the last level.
+    //
+    // Shared across the fleet rather than stated per car, because the levels were exported to one
+    // set of budgets. A van that wants to hold its detail further out is a reason to make this
+    // per-car and there is no such van yet.
+    std::span<const double> trafficLevelMetres{};
+
+    // Cars per kilometre of lane on this track. Grand City Parkway carries 35.1 km, so eleven is
+    // about 380 cars. `OSR_TRAFFIC=<n>` overrides it for one session.
+    double trafficDensityPerKilometre = 11.0;
+
+    // How many of them may be drawn at once. The simulated count and the drawn count are separate
+    // numbers on purpose — see `TrafficCars`.
+    std::size_t trafficDrawnCars = 64;
+
     // Which of the render rig's shaders draws the visual export, and it is a property of *that file*
     // rather than of the scene that shows it — which is why it is named here beside the asset.
     //
@@ -182,6 +250,112 @@ export struct TrackDefinition
 // WALL is the one entry AC does not state, because a wall is collision geometry rather than a
 // surface a car drives on — it has no `surfaces.ini` line at all. It takes PITLANE's 0.95, that
 // being AC's own figure for the concrete on this circuit, rather than an invented one.
+// The traffic fleet, exported out of Assetto Corsa content by `~/dev/ac-car-data` at four budgets
+// each: **32k triangles and 4 materials at level 0, 8k and 2 at level 1, 2k and 1 at level 2, and
+// 400 and 1 at level 3**. Every one of them is authored in metres with its origin on the road
+// between the axles and with +x to the car's left and +z forward — which is this engine's own frame,
+// so nothing about them is remapped anywhere.
+//
+// The exporter buckets each car's fifty-odd AC materials into `body`, `glass`, `lights` and `paint`
+// and declares a shader on the last two. The four wheels stay as their own nodes at every level that
+// has them, which is what a future spinning wheel will be driven through.
+
+// Holden Commodore SS, an ordinary saloon.
+constexpr auto commodoreLevels = std::array{
+    std::string_view("assets/Models/Traffic/bk_hol_commodore_ss_14_lod0.glb"),
+    std::string_view("assets/Models/Traffic/bk_hol_commodore_ss_14_lod1.glb"),
+    std::string_view("assets/Models/Traffic/bk_hol_commodore_ss_14_lod2.glb"),
+    std::string_view("assets/Models/Traffic/bk_hol_commodore_ss_14_lod3.glb")};
+
+// Kia Carnival, the people carrier.
+constexpr auto carnivalLevels = std::array{
+    std::string_view("assets/Models/Traffic/kia_carnival_KA4_lod0.glb"),
+    std::string_view("assets/Models/Traffic/kia_carnival_KA4_lod1.glb"),
+    std::string_view("assets/Models/Traffic/kia_carnival_KA4_lod2.glb"),
+    std::string_view("assets/Models/Traffic/kia_carnival_KA4_lod3.glb")};
+
+// Subaru Legacy TS, the second saloon.
+constexpr auto legacyLevels = std::array{
+    std::string_view("assets/Models/Traffic/luo_subaru_legacy_ts_lod0.glb"),
+    std::string_view("assets/Models/Traffic/luo_subaru_legacy_ts_lod1.glb"),
+    std::string_view("assets/Models/Traffic/luo_subaru_legacy_ts_lod2.glb"),
+    std::string_view("assets/Models/Traffic/luo_subaru_legacy_ts_lod3.glb")};
+
+// Toyota Hilux Revo, the pickup.
+constexpr auto hiluxLevels = std::array{
+    std::string_view("assets/Models/Traffic/toyota_hilux_revo_2021_mt_lod0.glb"),
+    std::string_view("assets/Models/Traffic/toyota_hilux_revo_2021_mt_lod1.glb"),
+    std::string_view("assets/Models/Traffic/toyota_hilux_revo_2021_mt_lod2.glb"),
+    std::string_view("assets/Models/Traffic/toyota_hilux_revo_2021_mt_lod3.glb")};
+
+// the police Dodge Charger.
+constexpr auto chargerLevels = std::array{
+    std::string_view("assets/Models/Traffic/mpw_police_dodge_charger_street_lod0.glb"),
+    std::string_view("assets/Models/Traffic/mpw_police_dodge_charger_street_lod1.glb"),
+    std::string_view("assets/Models/Traffic/mpw_police_dodge_charger_street_lod2.glb"),
+    std::string_view("assets/Models/Traffic/mpw_police_dodge_charger_street_lod3.glb")};
+
+// **The Charger states no paint and every other car does**, which is the whole of how a liveried car
+// keeps its livery: with no paint on the renderable the carpaint shader samples the material's own
+// base map, and that map is the police markings. See `TrafficCarModel::paintable`.
+// The idle and limiter speeds are each car's own `engine.ini` as the exporter's `<car>.json` carries
+// them (`idle_rpm`, `limiter_rpm`). The Hilux's bank is a Fiat 500's recorded to 7500 on a truck that
+// limits at 4300, so its top three loops are never reached; that is the mod's choice and stands.
+constexpr auto gcpTrafficFleet = std::array{
+    TrafficCarModel{.name = "commodore",
+                    .levels = commodoreLevels,
+                    .paintable = true,
+                    .audio = "assets/Sfx/bk_hol_commodore_ss_14",
+                    .idleRpm = 640.0,
+                    .limiterRpm = 6600.0},
+    TrafficCarModel{.name = "carnival",
+                    .levels = carnivalLevels,
+                    .paintable = true,
+                    .audio = "assets/Sfx/kia_carnival_KA4",
+                    .idleRpm = 800.0,
+                    .limiterRpm = 4700.0},
+    TrafficCarModel{.name = "legacy",
+                    .levels = legacyLevels,
+                    .paintable = true,
+                    .audio = "assets/Sfx/luo_subaru_legacy_ts",
+                    .idleRpm = 850.0,
+                    .limiterRpm = 6600.0},
+    TrafficCarModel{.name = "hilux",
+                    .levels = hiluxLevels,
+                    .paintable = true,
+                    .audio = "assets/Sfx/toyota_hilux_revo_2021_mt",
+                    .idleRpm = 850.0,
+                    .limiterRpm = 4300.0},
+    TrafficCarModel{.name = "charger",
+                    .levels = chargerLevels,
+                    .paintable = false,
+                    .audio = "assets/Sfx/mpw_police_dodge_charger_street",
+                    .idleRpm = 945.0,
+                    .limiterRpm = 6605.0,
+                    // Dragon Studio's police siren (freesound 397963), copied by hand beside the
+                    // fleet's recordings and gitignored with them.
+                    .siren = "assets/Sfx/police/siren.mp3"}};
+
+// Where each level gives way to the next, metres from the eye.
+//
+// Set against what each level costs rather than against how it looks, because the levels were
+// exported to a draw-call budget: level 0 is eight primitives and level 3 is one, and a moving car
+// is recorded four times a frame. Eighteen metres is about four car lengths — near enough that a
+// full-detail car is one the driver is actually looking at.
+//
+// **Level 1 reaches 120 m because level 2 is where a car loses its colour** (2026-09-11, on
+// Dominic's seat report that the swap is very noticeable). Levels 2 and 3 were exported with one
+// merged material and no `paint` bucket — verified on the files: `lod1` carries `paint` and
+// `extras.shader = "carpaint"`, `lod2` and `lod3` carry `body` alone — so the renderable's paint
+// reaches nothing and the car draws the body bucket's baked flat colour. A red car going grey is
+// what makes the swap visible, and at 45 m it happened in front of the driver. Level 1 carries the
+// paint bucket and the four wheel nodes, so the street keeps both out to 120 m and the colourless
+// swap lands where a car is a few pixels wide. What it costs is the 45-120 m band at seven to
+// eleven primitives a car instead of one; the drawn count stays capped at 64 whatever this says.
+// Exporting level 2 with its own paint bucket is what would make the swap invisible rather than
+// distant.
+constexpr auto gcpTrafficLevels = std::array{18.0, 120.0, 240.0};
+
 constexpr auto bathurstSurfaces = std::array{
     TrackSurface{.key = "ROAD", .friction = 0.98, .kind = raceengine::SurfaceKind::Tarmac},
     TrackSurface{.key = "EDGE", .friction = 0.96, .kind = raceengine::SurfaceKind::Tarmac},
@@ -333,6 +507,9 @@ constexpr auto trackTable = std::array{
                     .propVisualAsset = "assets/Tracks/gcp/grand_city_parkway_props_visual.glb",
                     .colliderManifestAsset = "assets/Tracks/gcp/grand_city_parkway_colliders.json",
                     .trafficAsset = "assets/Tracks/gcp/grand_city_parkway_traffic.json",
+                    .navmeshAsset = "assets/Tracks/gcp/grand_city_parkway_navmesh.json",
+                    .trafficFleet = gcpTrafficFleet,
+                    .trafficLevelMetres = gcpTrafficLevels,
                     // Exported without `--ac-materials`: `gcp/visual.log` records "converted 51 materials to
                     // metalness-roughness (infer)", and not one of the 52 carries an `extras.blinn_phong` block.
                     // So this file states itself in the model "pbr" reads, and re-exporting it with the flag is
@@ -367,6 +544,7 @@ constexpr auto trackTable = std::array{
                     // nothing for one to be exported from. Stated rather than left out, because
                     // every other field of this table is stated.
                     .trafficAsset = "",
+                    .navmeshAsset = "",
                     // Exported with `--ac-materials`, so its 188 materials each state an ambient, a diffuse, a
                     // specular and a Blinn-Phong exponent that a modeller set while looking at that formula.
                     .visualShader = "blinn-phong",

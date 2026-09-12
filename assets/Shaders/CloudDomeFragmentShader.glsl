@@ -61,7 +61,8 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
     vec4 wiperTiming;
     vec4 wiperPane;
     vec4 rainBody;
-    vec4 cloudParams;              // x effective coverage, y stratus-to-cumulus type, zw reserved
+    vec4 cloudParams;              // x effective coverage, y stratus-to-cumulus type,
+                                   // z the eye's sky gain (the skybox's; not read here), w reserved
 } frame;
 
 // The baked noise, at the fullscreen set's two volume slots. Both repeat — the tiles are the whole

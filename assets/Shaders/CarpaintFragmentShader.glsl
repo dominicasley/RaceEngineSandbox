@@ -417,6 +417,30 @@ float specularOcclusion(float NdV, float occlusion, float roughness)
     return clamp(pow(NdV + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
 }
 
+// A point light's reach at a squared distance, in world units: the inverse square, under a window
+// that takes it to exactly zero at the light's range so a lamp adds nothing past the sphere it
+// states, and over a floor of one world unit — a tenth of a metre — so no fragment is divided by
+// nothing on the lamp's own housing. A directional light never comes here: its reach is the
+// `ambientAttenuation.w` the loop reads as it always has. **The same function is in
+// PbrFragmentShader, BlinnPhongFragmentShader and CarpaintFragmentShader and must not drift**: one
+// lamp shades every surface near it through all three, and a road lit by one law under a car lit by
+// another reads as two lamps.
+float pointLightReach(float distanceSquared, float range)
+{
+    float ratio = distanceSquared / max(range * range, 1e-6);
+    float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+    return window * window / (distanceSquared + 1.0);
+}
+
+// A view-space direction into the tangent frame the direct term is computed in — the three rows of
+// the vertex stage's tangentBinormalNormalMatrix, interpolated — so a point light's direction built
+// per fragment lands in the frame the sun's direction arrived in.
+vec3 tangentFrame(vec3 viewSpaceDirection)
+{
+    return vec3(dot(tangentInNormalSpace, viewSpaceDirection), dot(bitangentInNormalSpace, viewSpaceDirection),
+                dot(normalsInNormalSpace, viewSpaceDirection));
+}
+
 vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 {
     // Tangent space, for the direct term. The vertex stage hands over the light and view
@@ -472,7 +496,23 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
     for (int lightIndex = 0; lightIndex < frame.lightCount.x; lightIndex++)
     {
-        vec3 L = normalize(lightDirectionWorldSpace[lightIndex]);
+        // The direction and the reach, by the light's kind: `position.w` is 1 for a point light,
+        // whose xyz is where it stands and whose direction is built here per fragment, and 0 for a
+        // directional one, whose direction the vertex stage already rotated into tangent space and
+        // whose reach is the attenuation it always was.
+        vec3 L;
+        float reach;
+        if (frame.lights[lightIndex].position.w > 0.5)
+        {
+            vec3 toLight = frame.lights[lightIndex].position.xyz - positionInWorldSpace;
+            L = normalize(tangentFrame(mat3(frame.viewMatrix) * toLight));
+            reach = pointLightReach(dot(toLight, toLight), frame.lights[lightIndex].ambientAttenuation.w);
+        }
+        else
+        {
+            L = normalize(lightDirectionWorldSpace[lightIndex]);
+            reach = frame.lights[lightIndex].ambientAttenuation.w;
+        }
         vec3 H = normalize(L + V);
 
         float NdL = max(0.001, dot(N, L));
@@ -488,8 +528,7 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
 
         float occlusion_from_shadow = (lightIndex == shadowLight) ? shadow : 1.0;
 
-        vec3 light_color = frame.lights[lightIndex].diffuse.xyz * frame.lights[lightIndex].ambientAttenuation.w
-            * occlusion_from_shadow;
+        vec3 light_color = frame.lights[lightIndex].diffuse.xyz * reach * occlusion_from_shadow;
         reflected_light += specref * light_color;
         diffuse_light += diffref * light_color;
     }

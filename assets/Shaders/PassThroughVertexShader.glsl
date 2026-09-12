@@ -66,6 +66,7 @@ layout(set = SET_DRAW, binding = 0) uniform DrawData {
     mat4 localToScreen; // clip-corrected for Vulkan depth 0..1 by the renderer
     mat4 normalMatrix;  // upper 3x3 meaningful
     ivec4 animated;     // x != 0 when skinned
+    vec4 signal;        // the renderable's own numbers; read by no vertex stage (PbrFragmentShader, BEACON_LENS)
 } draw;
 
 // The skinning palette, at a binding of its own on a ring of its own: it is MAX_JOINTS mat4s

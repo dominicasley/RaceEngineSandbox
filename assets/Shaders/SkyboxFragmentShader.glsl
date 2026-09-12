@@ -63,7 +63,8 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
     vec4 wiperTiming;
     vec4 wiperPane;
     vec4 rainBody;
-    vec4 cloudParams;          // x effective coverage, y stratus-to-cumulus type, zw reserved
+    vec4 cloudParams;          // x effective coverage, y stratus-to-cumulus type,
+                               // z the eye's sky gain (one in a probe capture), w reserved
 } frame;
 
 // The cloud dome map, beside the cascades on the scene shadow set: rgb the clouds' in-scattered
@@ -134,7 +135,7 @@ vec2 rsi(vec3 r0, vec3 rd, float sr) {
     );
 }
 
-vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAtmos, vec3 kRlh, float kMie, float shRlh, float shMie, float g) {
+vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAtmos, vec3 kRlh, float kMie, float shRlh, float shMie, float g, vec3 kOzn, float hOzn, float wOzn) {
     // Normalize the sun and view directions.
     pSun = normalize(pSun);
     r = normalize(r);
@@ -155,6 +156,8 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
     // Initialize optical depth accumulators for the primary ray.
     float iOdRlh = 0.0;
     float iOdMie = 0.0;
+    // Ozone absorbs and does not scatter, so its depth enters the attenuation and nothing else.
+    float iOdOzn = 0.0;
 
     // Calculate the Rayleigh and Mie phases.
     float mu = dot(r, pSun);
@@ -175,10 +178,13 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
         // Calculate the optical depth of the Rayleigh and Mie scattering for this step.
         float odStepRlh = exp(-iHeight / shRlh) * iStepSize;
         float odStepMie = exp(-iHeight / shMie) * iStepSize;
+        // The ozone layer is a tent: full density at its centre, zero a half-width above and below.
+        float odStepOzn = max(1.0 - abs(iHeight - hOzn) / wOzn, 0.0) * iStepSize;
 
         // Accumulate optical depth.
         iOdRlh += odStepRlh;
         iOdMie += odStepMie;
+        iOdOzn += odStepOzn;
 
         // Calculate the step size of the secondary ray.
         float jStepSize = rsi(iPos, pSun, rAtmos).y / float(jSteps);
@@ -189,6 +195,7 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
         // Initialize optical depth accumulators for the secondary ray.
         float jOdRlh = 0.0;
         float jOdMie = 0.0;
+        float jOdOzn = 0.0;
 
         // Sample the secondary ray.
         for (int j = 0; j < jSteps; j++) {
@@ -202,13 +209,14 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
             // Accumulate the optical depth.
             jOdRlh += exp(-jHeight / shRlh) * jStepSize;
             jOdMie += exp(-jHeight / shMie) * jStepSize;
+            jOdOzn += max(1.0 - abs(jHeight - hOzn) / wOzn, 0.0) * jStepSize;
 
             // Increment the secondary ray time.
             jTime += jStepSize;
         }
 
         // Calculate attenuation.
-        vec3 attn = exp(-(kMie * (iOdMie + jOdMie) + kRlh * (iOdRlh + jOdRlh)));
+        vec3 attn = exp(-(kMie * (iOdMie + jOdMie) + kRlh * (iOdRlh + jOdRlh) + kOzn * (iOdOzn + jOdOzn)));
 
         // Accumulate scattering.
         totalRlh += odStepRlh * attn;
@@ -241,11 +249,25 @@ void main()
         22.0,                           // intensity of the sun
         6371e3,                         // radius of the planet in meters
         6471e3,                         // radius of the atmosphere in meters
-        vec3(5.5e-6, 13.0e-6, 22.4e-6), // Rayleigh scattering coefficient
-        21e-6,                          // Mie scattering coefficient
+        // The Rayleigh blue and the Mie coefficient are the measured clear-sky values (Bruneton
+        // 2008; Hillaire 2020: Rayleigh 33.1e-6 in the blue, Mie scatter 4e-6), placed 2026-09-11
+        // for a deeper blue. They replaced the integral's stock 22.4e-6 and 21e-6: the stock Mie
+        // is five times a clean sky's and lays a grey veil over the whole sky, and the stock blue
+        // under-scatters at the zenith. `atmosphericSunTransmittance` in RenderRig.cppm restates
+        // these and the ozone below and MUST NOT DRIFT from them.
+        vec3(5.5e-6, 13.0e-6, 33.1e-6), // Rayleigh scattering coefficient
+        4e-6,                           // Mie scattering coefficient
         8e3,                            // Rayleigh scale height
         1.2e3,                          // Mie scale height
-        0.758                           // Mie preferred scattering direction
+        0.758,                          // Mie preferred scattering direction
+        // Ozone (2026-09-12, Hillaire 2020): the Chappuis band absorbs green most, red next and
+        // blue almost not at all, over a layer that peaks at 25 km and is gone by 10 and 40. A
+        // vertical column is 0.028 of depth in the green. It is what keeps the zenith blue under
+        // a low sun and the horizon band blue instead of yellow: on a long slant path the green and
+        // red are taken and the blue survives. Absorption only, so it never scatters light in.
+        vec3(0.650e-6, 1.881e-6, 0.085e-6), // ozone absorption coefficient
+        25e3,                           // ozone layer centre
+        15e3                            // ozone layer half-width
     );
 
     // The clouds, composited over the integral and BEFORE the disc: `sky * a + rgb`, radiance
@@ -365,5 +387,16 @@ void main()
     // The medium, last: everything above it is light arriving from beyond the fog, and this is
     // the kilometre of air it arrives through.
     // Unfogged on purpose: the fullscreen fog pass integrates the sky's ray one pass later.
+    //
+    // The eye's sky stop, last of all (2026-09-12): the landscape photographer's graduated filter.
+    // The meter exposes the street and the outdoor dial opens 1.5 stops over it, which lands this
+    // sky — physically bright, 0.7 of a sunlit grey at the zenith — past the tone curve's ceiling,
+    // where the per-channel curve prints it white. The engine writes the gain as ONE in a probe
+    // capture, so the probes photograph the true sky and the world's ambient light does not move
+    // with it; a gain of exactly one is bit-for-bit the sky before the stop existed. Applied to the
+    // whole picture, clouds and disc included: the disc is capped four orders over the ceiling and
+    // does not notice, and the clouds are part of the sky the eye is being shown.
+    color *= frame.cloudParams.z;
+
     fragColor = vec4(color, 1.0f);
 }
