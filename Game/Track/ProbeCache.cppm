@@ -55,6 +55,12 @@ export struct ProbeCacheKey
 {
     std::string track;
     double sunElevationDegrees = 0.0;
+    // The moon's elevation, added 2026-09-15 with the night sky. It belongs in the key for the
+    // reason the sun's does — past astronomical twilight the moon IS the body the sky follows and
+    // the probes photograph — and it is written as the elevation that *decided* the capture: the
+    // resolved moon angle while the moon is the body, and a flat zero while the sun is, so that
+    // changing `OSR_MOON` by day is not a cache miss for a sky it cannot move.
+    double moonElevationDegrees = 0.0;
     double cloudCoverage = 0.0;
     double spacingMetres = 0.0;
     double heightMetres = 0.0;
@@ -111,7 +117,10 @@ constexpr auto probeCacheMagic = std::string_view("OSRPROBE");
 // though it were new, which is the difference between a rebuilt cache and a wrongly lit city.
 // 2 since 2026-09-13: the header carries `worldHash`, so every version-1 file is a miss and is
 // rebuilt under the sky that lit the world on that date rather than the one before it.
-constexpr auto probeCacheVersion = std::uint32_t{2};
+// 3 since 2026-09-15, when the moon joined the key: an older file holds one fewer double and would
+// be read as a valid header with every field after the sun shifted along, which is the one failure
+// mode this version number exists for.
+constexpr auto probeCacheVersion = std::uint32_t{3};
 
 static_assert(sizeof(float) == 4, "the cache writes raw float32");
 static_assert(sizeof(double) == 8, "the cache writes raw float64");
@@ -212,6 +221,7 @@ bool probeCacheMatches(const ProbeCacheKey& wanted, const ProbeCacheKey& found)
     return wanted.track == found.track && wanted.probeCount == found.probeCount &&
            wanted.worldHash == found.worldHash &&
            closeEnough(wanted.sunElevationDegrees, found.sunElevationDegrees) &&
+           closeEnough(wanted.moonElevationDegrees, found.moonElevationDegrees) &&
            closeEnough(wanted.cloudCoverage, found.cloudCoverage) && closeEnough(wanted.spacingMetres, found.spacingMetres) &&
            closeEnough(wanted.heightMetres, found.heightMetres) &&
            closeEnough(wanted.minimumSeparationMetres, found.minimumSeparationMetres);
@@ -253,7 +263,8 @@ std::expected<ProbeCache, std::string> loadProbeCache(const std::string& filePat
     }
 
     auto probeCount = std::uint32_t{0};
-    if (!readRaw(stream, cache.key.sunElevationDegrees) || !readRaw(stream, cache.key.cloudCoverage) ||
+    if (!readRaw(stream, cache.key.sunElevationDegrees) || !readRaw(stream, cache.key.moonElevationDegrees) ||
+        !readRaw(stream, cache.key.cloudCoverage) ||
         !readRaw(stream, cache.key.spacingMetres) || !readRaw(stream, cache.key.heightMetres) ||
         !readRaw(stream, cache.key.minimumSeparationMetres) || !readRaw(stream, cache.key.worldHash) ||
         !readRaw(stream, probeCount))
@@ -300,6 +311,7 @@ std::expected<void, std::string> saveProbeCache(const std::string& filePath, con
     writeRaw(stream, static_cast<std::uint32_t>(cache.key.track.size()));
     stream.write(cache.key.track.data(), static_cast<std::streamsize>(cache.key.track.size()));
     writeRaw(stream, cache.key.sunElevationDegrees);
+    writeRaw(stream, cache.key.moonElevationDegrees);
     writeRaw(stream, cache.key.cloudCoverage);
     writeRaw(stream, cache.key.spacingMetres);
     writeRaw(stream, cache.key.heightMetres);

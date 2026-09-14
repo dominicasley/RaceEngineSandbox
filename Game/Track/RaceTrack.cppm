@@ -161,11 +161,15 @@ export struct TrackDefinition
     // breakable props, which is stage 1 of `docs/world-colliders-brief.md` and is a legitimate world.
     std::string_view colliderManifestAsset;
 
-    // The traffic network export beside those two, or empty where a circuit has none. It is CSP's
-    // lane graph — a point list per lane, authored at road level — and this game reads it for two
-    // things: where the city's local light probes stand today, and where traffic drives tomorrow.
-    // Empty is not a gap to fill in later: Mount Panorama is a circuit and has no traffic lanes,
-    // and a scene that finds nothing here simply places no street probes.
+    // The road graph beside those two, or empty where a circuit has none: `~/dev/ac-car-data`'s
+    // `_roads.json`, **derived** from the collision hull — every junction box the author drew cut
+    // out of the carriageway, what is left centred and laned, every arriving lane joined to every
+    // leaving one through each box — with the lanes, the turns, their conflicts and who gives way
+    // (docs/road-network-brief.md; the exporter's own account is its engine brief §7b). This game
+    // reads it for two things: where traffic drives, and where the city's local light probes stand.
+    // Until 2026-09-14 this named CSP's own lane export, twelve rings with no graph that reached
+    // half the roads. Empty is not a gap to fill in later: Mount Panorama is a circuit and has no
+    // roads to graph, and a scene that finds nothing here simply places no street probes.
     std::string_view trafficAsset;
 
     // The navigation mesh beside the traffic export, or empty where a track has none: the drivable
@@ -197,8 +201,10 @@ export struct TrackDefinition
     // per-car and there is no such van yet.
     std::span<const double> trafficLevelMetres{};
 
-    // Cars per kilometre of lane on this track. Grand City Parkway carries 35.1 km, so eleven is
-    // about 380 cars. `OSR_TRAFFIC=<n>` overrides it for one session.
+    // Cars per kilometre of road lane on this track — the turns through the junctions are not
+    // counted. Grand City Parkway's road graph carries 54.6 km of lane over 342 roads, so eleven is
+    // about 600 cars (it was 380 on the CSP export's 35.1 km, which reached 178 of those roads — the
+    // same city has the same traffic per street). `OSR_TRAFFIC=<n>` overrides it for one session.
     double trafficDensityPerKilometre = 11.0;
 
     // How many of them may be drawn at once. The simulated count and the drawn count are separate
@@ -506,7 +512,7 @@ constexpr auto trackTable = std::array{
                     .propColliderAsset = "assets/Tracks/gcp/grand_city_parkway_prop_colliders.glb",
                     .propVisualAsset = "assets/Tracks/gcp/grand_city_parkway_props_visual.glb",
                     .colliderManifestAsset = "assets/Tracks/gcp/grand_city_parkway_colliders.json",
-                    .trafficAsset = "assets/Tracks/gcp/grand_city_parkway_traffic.json",
+                    .trafficAsset = "assets/Tracks/gcp/grand_city_parkway_roads.json",
                     .navmeshAsset = "assets/Tracks/gcp/grand_city_parkway_navmesh.json",
                     .trafficFleet = gcpTrafficFleet,
                     .trafficLevelMetres = gcpTrafficLevels,

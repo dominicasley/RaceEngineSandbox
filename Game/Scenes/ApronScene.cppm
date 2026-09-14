@@ -14,6 +14,7 @@ import :FPSCameraController;
 import :GroundPlane;
 import :Options;
 import :RenderRig;
+import :TrackFrame;
 
 import raceengine;
 
@@ -110,7 +111,10 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     engine(engine),
     scene(engine.sceneManager().createScene()),
     camera(orThrow(engine.scene().createCamera(scene))),
-    freeCamera(engine, cameraYaw, cameraPitch)
+    // The fixture's own view unless `OSR_CAM_LOOK` states one — the same two variables the circuit
+    // honours, so a probe or a paint report from this fixture can be stood in exactly (2026-09-13).
+    freeCamera(engine, options.cameraPose.lookStated ? glm::radians(options.cameraPose.yawDegrees) : cameraYaw,
+               options.cameraPose.lookStated ? glm::radians(options.cameraPose.pitchDegrees) : cameraPitch)
 {
     camera.debugName = "apron";
 
@@ -137,7 +141,14 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     // the meter can reach the answer it wants.
     engine.camera().setFilmSpeed(camera, 25600);
 
-    engine.camera().setPosition(camera, cameraStand.x, cameraStand.y, cameraStand.z);
+    // `OSR_CAM_POS` stands the camera elsewhere, in metres, as on the circuit; unset is the stand
+    // both goldens were blessed from.
+    const auto stand = options.cameraPose.positionStated
+                           ? glm::vec3(static_cast<float>(options.cameraPose.xMetres * worldUnitsPerMetre),
+                                       static_cast<float>(options.cameraPose.yMetres * worldUnitsPerMetre),
+                                       static_cast<float>(options.cameraPose.zMetres * worldUnitsPerMetre))
+                           : cameraStand;
+    engine.camera().setPosition(camera, stand.x, stand.y, stand.z);
 
     // The apron's ground is y = 0, so the fog layer is quoted where the fixture actually stands.
     // The rig speaks in float and the options in double, and the conversion has to keep "unset"
@@ -146,6 +157,16 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
     const auto cloudBlend = options.cloudBlendWeight.has_value()
                                 ? std::optional<float>(static_cast<float>(options.cloudBlendWeight.value()))
                                 : std::optional<float>{};
+    // The moon, on the blend weight's terms: unset is an absence the rig resolves into the full moon
+    // opposite the sun, and is a different thing from any angle this fixture could name.
+    const auto moonElevation = options.moonElevationDegrees.has_value()
+                                   ? std::optional<float>(static_cast<float>(options.moonElevationDegrees.value()))
+                                   : std::optional<float>{};
+    // The night's hold-back, on the same terms: unset is an absence the rig derives from the eye, and
+    // is a different thing from any number of stops this scene could name.
+    const auto nightStops = options.nightStops.has_value()
+                                ? std::optional<float>(static_cast<float>(options.nightStops.value()))
+                                : std::optional<float>{};
 
     const auto rig = buildRenderRig(engine, scene, camera, 2500.0f,
                                     RigAir{.baseHeight = 0.0f,
@@ -153,6 +174,8 @@ ApronScene::ApronScene(raceengine::Engine& engine, const RunOptions& options) :
                                            .skyEyeStops = static_cast<float>(options.skyEyeStops),
                                            .probeDistanceMarch = options.probeDistanceMarch,
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
+                                           .moonElevationDegrees = moonElevation,
+                                           .nightStops = nightStops,
                                            .rain = static_cast<float>(options.rainIntensity),
                                            .clouds = static_cast<float>(options.cloudCoverage),
                                            .cloudMapWidth = options.cloudMapWidth,

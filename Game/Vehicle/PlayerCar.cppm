@@ -16,6 +16,7 @@ module;
 
 export module osr.game:PlayerCar;
 
+import :InstrumentCluster;
 import :Options;
 import :SimulatedCar;
 import :TrackFrame;
@@ -61,6 +62,9 @@ export class PlayerCar
     SimulatedCar& car;
     SceneNode& node;
     RenderableModel& carRenderable;
+
+    // The dials, found on the model once and written from every snapshot beside the rim.
+    InstrumentCluster cluster;
 
     // Index into the renderable's meshes, found once by name; nothing if the model carries no
     // STEER_HR, which is a car whose wheel simply does not turn rather than an error.
@@ -108,6 +112,12 @@ public:
     // the two are strictly ordered by the handshake, and leaving it to chance would make a future
     // sheet line that moved a spring lag the picture by a tick for reasons nobody could see.
     void publish();
+
+    // The dials and the displays, for the scene to hand the screen canvas and the font to.
+    [[nodiscard]] InstrumentCluster& instrumentCluster()
+    {
+        return cluster;
+    }
 
     // Simulation to main thread: one snapshot, and everything drawn from it.
     void collect();
@@ -159,6 +169,7 @@ PlayerCar::PlayerCar(raceengine::Engine& engine, SimulatedCar& car, SceneNode& n
     car(car),
     node(node),
     carRenderable(carRenderable),
+    cluster(engine, carRenderable),
     rackTracePath(std::move(rackTracePath))
 {
     // The sheet this car is tuned by, if there is one. Read on the first update rather than here, so
@@ -454,6 +465,7 @@ void PlayerCar::collect()
     latest = car.snapshot();
 
     turnSteeringWheel();
+    cluster.update(latest, static_cast<double>(raceengine::Engine::fixedTimeStep));
 
     // What the car sounds like, from the tick's own state. Once per engine tick rather than once per
     // simulation tick: a crossfade driven three times as fast as the picture moves is a crossfade

@@ -32,6 +32,7 @@ target_sources(OpenStreetRace PRIVATE
         Game/Track/Json.cppm
         Game/Track/ProbeCache.cppm
         Game/Track/RaceTrack.cppm
+        Game/Track/RoadGraph.cppm
         Game/Track/TrafficNetwork.cppm
         Game/Traffic/DiagnosticLog.cppm
         Game/Traffic/PoliceCar.cppm
@@ -39,6 +40,8 @@ target_sources(OpenStreetRace PRIVATE
         Game/Traffic/PoliceLog.cppm
         Game/Traffic/TrafficDirector.cppm
         Game/Traffic/TrafficLog.cppm
+        Game/Ui/Font.cppm
+        Game/Vehicle/InstrumentCluster.cppm
         Game/Vehicle/PlayerCar.cppm
         Game/Vehicle/SimulatedCar.cppm
         Game/Vehicle/Simulation.cppm

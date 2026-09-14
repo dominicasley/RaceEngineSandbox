@@ -44,7 +44,7 @@ struct Light {
 struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
-    vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
+    vec4 boxMax;               // xyz world maximum, w the fade in [0,1], negative for the global probe
     vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
@@ -82,6 +82,7 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
 // pick a probe with a dynamic index.
 layout(set = SET_FRAME, binding = PROBE_SPECULAR_BINDING) uniform samplerCubeArray probeSpecular;
 layout(set = SET_FRAME, binding = PROBE_DISTANCE_BINDING) uniform samplerCubeArray probeDistance;
+layout(set = SET_FRAME, binding = PROBE_DISTANCE_SMOOTH_BINDING) uniform samplerCubeArray probeDistanceSmooth;
 
 // textureTransform is a 3x3 UV transform in a mat4 slot: std140 pads a mat3's columns to 16
 // bytes each, which the C++ glm::mat3 does not, so the ABI carries it as a mat4.
@@ -89,7 +90,7 @@ layout(set = SET_MATERIAL, binding = 0) uniform MaterialData {
     vec4 baseColour;
     vec4 roughMetal;       // x roughness, y metalness, z alpha cutoff (0 = no test)
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
-    ivec4 useTextures2;    // x occlusion
+    ivec4 useTextures2;    // x occlusion, y opaque, z blinn-phong stated, w receives screen AO
     mat4 textureTransform; // KHR_texture_transform, upper 3x3
     vec4 blinnPhong;       // the classic reflectance model's coefficients; read by BlinnPhongFragmentShader
     // The blended-material feature: xyzw are the four detail layers' tiling, in repeats per unit of
@@ -346,7 +347,7 @@ vec3 evaluateIrradiance(vec4 coefficients[SH_COEFFICIENTS], vec3 direction)
 // separate inside/outside branch to disagree with the falloff.
 float probeWeight(int index, vec3 worldPosition)
 {
-    if (frame.probes[index].boxMax.w != 0.0)
+    if (frame.probes[index].boxMax.w < 0.0)
     {
         // The global probe has no bound. Its weight is decided by what the local probes left over,
         // not by where the fragment is.
@@ -357,7 +358,11 @@ float probeWeight(int index, vec3 worldPosition)
                               frame.probes[index].boxMax.xyz - worldPosition);
     vec3 ramp = clamp(insideDistance / max(frame.probes[index].boxMin.w, 0.0001), 0.0, 1.0);
 
-    return ramp.x * ramp.y * ramp.z;
+    // boxMax.w is this probe's fade, and it multiplies the box ramp rather than replacing it: the
+    // box says which fragments this probe is about and the fade says how much of it the frame is
+    // taking at all. The engine ramps it to zero before the frame's ranking can evict the probe,
+    // so a probe joining or leaving the set changes nothing (uploadProbes).
+    return ramp.x * ramp.y * ramp.z * frame.probes[index].boxMax.w;
 }
 
 // Re-aims the reflection vector at the surface it actually hits, as seen from the capture point.
@@ -371,10 +376,14 @@ float probeWeight(int index, vec3 worldPosition)
 //   radiance, the distance from the capture point to the first surface along every direction. The
 //   reflection ray is marched from the fragment in geometric steps; a sample is *outside* while its
 //   radius from the capture point is under the cube's distance along it, and the first sample
-//   inside after one outside brackets the hit, which five bisections then place. Only a crossing
-//   from outside counts: a fragment on the road sits on a surface the cube holds, and a 128-texel
-//   face quantises that surface's distance by metres at grazing angles, so the first sample can
-//   read inside for no reason. No hit within reach is the sky, which genuinely is at infinity.
+//   inside after one outside brackets the hit, which five bisections then place. Every sample,
+//   coarse and fine, reads the one edge-aware filtered distance below: a bracket found with one
+//   function and bisected with another is invalid wherever the two disagree — along every grazing
+//   surface — and the bisection then collapses onto a coarse step, which the paint showed as the
+//   same window repeated once per step (2026-09-13). Only a crossing from outside counts: a fragment on the road
+//   sits on a surface the cube holds, and one texel of a face spans metres of that surface at a
+//   grazing angle, so the first sample can read inside for no reason. No hit within reach is the
+//   sky, which genuinely is at infinity.
 // - **The influence box**, which every reflection was corrected against until then: the ray is
 //   intersected with the box the probe carries, whose walls stand where no street's do. A
 //   reflection vector with a zero component divides to infinity there, which the min/max chain
@@ -384,10 +393,25 @@ const int probeMarchRefinements = 5;
 // World units, a tenth of a metre: the first sample half a metre out, the last 150 m.
 const float probeMarchStart = 5.0;
 const float probeMarchReach = 1500.0;
+// How far the filtered distance may stray from the nearest texel's and still be read as the same
+// surface, as a fraction of the nearest. The road seen at a grazing angle from a stand six metres
+// up changes by a fifth of its distance across one texel a hundred metres out, and that is a
+// surface; a wall against the sky changes by a thousandfold, and that is an edge.
+const float probeDistanceEdgeFraction = 0.25;
+
+// The distance along a direction as the refinement reads it: bilinear across one surface, so the
+// re-aim moves continuously across a texel rather than stepping at its edge, and nearest across an
+// edge, where the filtered value is a surface half way to the horizon that nothing stands on.
+float probeSurfaceDistance(vec3 offset, float slice)
+{
+    float nearest = textureLod(probeDistance, vec4(offset, slice), 0.0).r;
+    float filtered = textureLod(probeDistanceSmooth, vec4(offset, slice), 0.0).r;
+    return abs(filtered - nearest) < probeDistanceEdgeFraction * nearest ? filtered : nearest;
+}
 
 vec3 parallaxCorrect(int index, vec3 worldPosition, vec3 reflection)
 {
-    if (frame.probes[index].boxMax.w != 0.0)
+    if (frame.probes[index].boxMax.w < 0.0)
     {
         // The global probe's environment is the sky, which genuinely is at infinity.
         return reflection;
@@ -410,37 +434,53 @@ vec3 parallaxCorrect(int index, vec3 worldPosition, vec3 reflection)
     float growth = pow(probeMarchReach / probeMarchStart, 1.0 / float(probeMarchSteps - 1));
     float t = probeMarchStart;
     float lastOutside = 0.0;
+    float lastOutsideGap = 0.0;
     bool wasOutside = false;
 
     for (int step = 0; step < probeMarchSteps; step++)
     {
         vec3 offset = worldPosition + reflection * t - centre;
-        float surface = textureLod(probeDistance, vec4(offset, slice), 0.0).r;
+        // Negative outside the recorded world, positive inside; continuous along the ray wherever
+        // the filtered distance is, which is everywhere but an edge.
+        float gap = length(offset) - probeSurfaceDistance(offset, slice);
 
-        if (length(offset) < surface)
+        if (gap < 0.0)
         {
             wasOutside = true;
             lastOutside = t;
+            lastOutsideGap = gap;
         }
         else if (wasOutside)
         {
             float low = lastOutside;
+            float lowGap = lastOutsideGap;
             float high = t;
+            float highGap = gap;
             for (int refinement = 0; refinement < probeMarchRefinements; refinement++)
             {
                 float mid = 0.5 * (low + high);
                 vec3 midOffset = worldPosition + reflection * mid - centre;
-                if (length(midOffset) < textureLod(probeDistance, vec4(midOffset, slice), 0.0).r)
+                float midGap = length(midOffset) - probeSurfaceDistance(midOffset, slice);
+                if (midGap < 0.0)
                 {
                     low = mid;
+                    lowGap = midGap;
                 }
                 else
                 {
                     high = mid;
+                    highGap = midGap;
                 }
             }
 
-            return normalize(worldPosition + reflection * high - centre);
+            // The root by one secant step across what the bisection left, and this is not a
+            // refinement of taste: a bisection alone hands back one of thirty-two positions in the
+            // bracket, and on a mirror the fragments whose true hit rounds to the same position
+            // form a band that shows the wall re-aimed from one place — the next band from the
+            // next — so a ledge repeats once per band (2026-09-13, the seat's second picture).
+            // The gap is continuous within a surface, so its interpolated zero is too.
+            float hit = highGap > lowGap ? low + (high - low) * (-lowGap) / (highGap - lowGap) : high;
+            return normalize(worldPosition + reflection * hit - centre);
         }
 
         t *= growth;
@@ -536,7 +576,13 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // occlusion onto the window. The other half of the rule is in the engine, which keeps
     // transparent geometry out of the prepass entirely — where two coplanar panes would otherwise
     // fight and the gather would print the fight back onto the glass as hard-edged wedges.
-    float screenOcclusion = material.useTextures2.y != 0
+    //
+    // A surface that states it does not receive the screen term reads none of it either
+    // (Material::receivesScreenOcclusion, useTextures2.w): the gather runs at half resolution, so
+    // geometry a metre from a moving eye takes its occlusion from a different texel every frame and
+    // crawls. Such a surface carries its occlusion baked into the ORM red channel, which is the
+    // `occlusion` above and is multiplied in regardless.
+    float screenOcclusion = material.useTextures2.y != 0 && material.useTextures2.w != 0
         ? texture(ambientOcclusionMap, gl_FragCoord.xy / vec2(textureSize(ambientOcclusionMap, 0))).r
         : 1.0;
     float indirectOcclusion = occlusion * screenOcclusion;
@@ -633,7 +679,7 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     // same confidence as one in the middle of it.
     for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
     {
-        if (frame.probes[index].boxMax.w != 0.0)
+        if (frame.probes[index].boxMax.w < 0.0)
         {
             continue;
         }
@@ -690,7 +736,7 @@ vec3 ads(vec4 albedo, vec4 metallicRoughness, vec3 normalMap)
     {
         for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
         {
-            if (frame.probes[index].boxMax.w == 0.0)
+            if (frame.probes[index].boxMax.w >= 0.0)
             {
                 continue;
             }
@@ -933,7 +979,7 @@ void main()
         float coatLocalWeight = 0.0;
         for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
         {
-            if (frame.probes[index].boxMax.w != 0.0 || frame.probes[index].position.w < 0.0)
+            if (frame.probes[index].boxMax.w < 0.0 || frame.probes[index].position.w < 0.0)
             {
                 continue;
             }
@@ -960,7 +1006,7 @@ void main()
         {
             for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
             {
-                if (frame.probes[index].boxMax.w == 0.0)
+                if (frame.probes[index].boxMax.w >= 0.0)
                 {
                     continue;
                 }

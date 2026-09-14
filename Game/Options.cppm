@@ -257,6 +257,18 @@ export struct RunOptions
     // a circuit with nothing standing between the camera and the horizon gets very little from it.
     bool occlusionCulling = true;
 
+    // Whether the draw walk honours the draw distance the content states in an object's own name.
+    // `OSR_DRAW_DISTANCE`, the word `on` or the word `off`, and unset is **on**.
+    //
+    // AC track content names it — `road_.asphc_lod450m` is drawn out to 450 m — and Grand City
+    // Parkway is made of it: 923 of its 1033 meshes carry a distance across three of them, and the
+    // near and far versions of a building are both in the file. Drawn together they occupy one
+    // volume and take the depth test from each other in patches. `off` draws the file whole, which
+    // is every frame this game rendered before 2026-09-13 and the A/B for whether this test is what
+    // removed something. Mount Panorama names no distances at all, so on that track the two arms
+    // are the same frame.
+    bool drawDistanceCulling = true;
+
     // Where a session's tyres start, in degrees Celsius. `OSR_TYRE_TEMP`: a number, or the word
     // `ambient` for the track's own temperature.
     //
@@ -383,6 +395,19 @@ export struct RunOptions
     // Outside the cross-variable validation, like the look knobs: the weather has no partner among
     // scene, camera and driver to contradict.
     double airTemperatureCelsius = 20.0;
+
+    // The instrument cluster's displays (docs/instrument-cluster-brief.md §6). `OSR_DASH_INTENSITY`
+    // is where a readout lands on the tone curve — its brightness as a fraction of the frame's
+    // white before the curve, whatever the meter's exposure, because the scene scales the
+    // readouts by the drawing camera's exposure every tick (a cluster dims itself to the eye);
+    // unset is 0.8, PLACED — the first capture at a radiance of 4 was thirty times over white at
+    // dusk. `OSR_DASH_OVERLAY=on` draws the same readouts over the frame's top-left corner as
+    // well, which is how to see the canvas without a dashboard in the way; unset is off.
+    double dashIntensity = 0.8;
+    bool dashOverlay = false;
+    // `OSR_UNITS`: what the readouts count in — `metric` (km/h, km; unset) or `imperial` (mph, miles,
+    // which is what the dial face prints: the asset carries no metric face, docs/instrument-cluster-brief.md §6.5).
+    bool metricUnits = true;
 
     // A session override of the setup sheet's assists. `OSR_ASSISTS`, a comma-separated list of
     // `abs`, `tc`, `tc-sport` and `xds`, or the single word `none`; **unset means the sheet decides**,
@@ -522,7 +547,39 @@ export struct RunOptions
     // the seat: at six degrees the world is dim and the drama is all in the sky, and by twelve the
     // light rakes across the track and the ground is legible again. Negative is allowed and is the
     // sun below the horizon — a legitimate scene, and a very dark one.
+    //
+    // **The floor came off on 2026-09-15 and now reaches the nadir.** It stood at -20 degrees, which
+    // was as far as a sky with no night in it was worth taking: the scattering integral never asked
+    // whether the earth stood between a sample and the sun, so every elevation below the horizon
+    // drew a dimmer daylight. With that answered, past -18 is astronomical twilight and the rig hands
+    // the sky to the moon — so -60 is midnight and means it.
     double sunElevationDegrees = 19.0;
+
+    // The moon's elevation above the horizon, in degrees. `OSR_MOON`; unset is the full moon, which
+    // stands opposite the sun and so sits as far above the horizon as the sun is below it. Read only
+    // once the sun is past astronomical twilight, because only then is the moon the body the sky
+    // follows. Stated for the same reason `OSR_SUN` is: a moon lower than the full moon's place is a
+    // different night, and which night is a seat decision.
+    std::optional<double> moonElevationDegrees{};
+
+    // How many stops under its own meter a night is printed. `OSR_NIGHT_STOPS`; **unset is an absence
+    // and not a number** — the rig derives it from the eye (`perceivedNightStops`), which is about
+    // 5.8 stops under the default moon and follows that moon's height on its own.
+    //
+    // It exists because a meter normalises: lift a moonlit scene into the range the buffers and the
+    // meter can carry, and the meter then prints it exactly as bright as a morning. Scattering is
+    // linear in the source, so a moonlit scene and a dawn have the same ratios inside them — sky to
+    // ground, disc to sky — and once the level is gone nothing says which one it is. A night reads as
+    // a night only because it is underexposed against its own meter. Zero, or `off`, is the night the
+    // meter prints unaided.
+    std::optional<double> nightStops{};
+
+    // The cabin's exposure compensation in stops, `OSR_COCKPIT_STOPS`; the default is the -1.25 the
+    // scene has carried since 2026-08-20. Under split metering the cabin meters its own pixels, so
+    // this shove sits on a reading several stops darker than the full-frame one it was tuned
+    // against, and the consequence the seat reports is a cockpit view brighter than an outside view
+    // of the same world — at every hour, not only at night. A look decision, so a knob.
+    double cockpitStops = -1.25;
 
     // `OSR_CAM_POS` and `OSR_CAM_LOOK`. Inside the cross-variable validation rather than beside it,
     // unlike the look multipliers: this one *does* have a partner to contradict, because only the
@@ -1020,6 +1077,24 @@ struct MirrorOptions
                              "proved is hidden.");
 }
 
+[[nodiscard]] bool drawDistanceCulling()
+{
+    const auto value = setting("OSR_DRAW_DISTANCE");
+    if (value.empty() || value == "on")
+    {
+        return true;
+    }
+
+    if (value == "off")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_DRAW_DISTANCE is 'on' or 'off', not '" + value +
+                             "'. Unset is 'on', which is the draw walk honouring the distance the "
+                             "content names each object at.");
+}
+
 [[nodiscard]] TyreTemperatureChoice tyreTemperature()
 {
     const auto value = setting("OSR_TYRE_TEMP");
@@ -1364,6 +1439,68 @@ struct MirrorOptions
     }
 
     return rate;
+}
+
+[[nodiscard]] double dashIntensity()
+{
+    const auto value = setting("OSR_DASH_INTENSITY");
+    if (value.empty())
+    {
+        return 0.8;
+    }
+
+    auto consumed = std::size_t{0};
+    auto intensity = 0.0;
+
+    try
+    {
+        intensity = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_DASH_INTENSITY is not a number: '" + value + "'.");
+    }
+
+    if (consumed != value.size() || intensity < 0.0 || intensity > 10.0)
+    {
+        throw std::runtime_error("OSR_DASH_INTENSITY is the readouts' brightness as a fraction of the frame's white, "
+                                 "0 to 10: '" +
+                                 value + "'.");
+    }
+
+    return intensity;
+}
+
+[[nodiscard]] bool metricUnits()
+{
+    const auto value = setting("OSR_UNITS");
+    if (value.empty() || value == "metric")
+    {
+        return true;
+    }
+
+    if (value == "imperial")
+    {
+        return false;
+    }
+
+    throw std::runtime_error("OSR_UNITS is 'metric' or 'imperial', not '" + value + "'. Unset is 'metric'.");
+}
+
+[[nodiscard]] bool dashOverlay()
+{
+    const auto value = setting("OSR_DASH_OVERLAY");
+    if (value.empty() || value == "off")
+    {
+        return false;
+    }
+
+    if (value == "on")
+    {
+        return true;
+    }
+
+    throw std::runtime_error("OSR_DASH_OVERLAY is 'on' or 'off', not '" + value + "'. Unset is 'off'.");
 }
 
 [[nodiscard]] double airTemperatureCelsius()
@@ -1768,10 +1905,126 @@ struct MirrorOptions
         throw std::runtime_error("OSR_SUN is not a number of degrees: '" + value + "'.");
     }
 
-    // Below the horizon is night and is allowed; past the zenith is not a sun angle.
-    if (degrees < -20.0 || degrees > 90.0)
+    // Below the horizon is night and is allowed all the way to the nadir; past the zenith is not an
+    // elevation at all in either direction.
+    if (degrees < -90.0 || degrees > 90.0)
     {
-        throw std::runtime_error("OSR_SUN is an elevation in degrees and lies between -20 and 90: '" + value + "'.");
+        throw std::runtime_error("OSR_SUN is an elevation in degrees and lies between -90 and 90: '" + value + "'.");
+    }
+
+    return degrees;
+}
+
+// The stops a night is held back by, parsed on `OSR_SKY_STOPS`' terms: a number of stops, `off` for
+// none — the picture the meter would print unaided. Refused outside a range that is still a picture.
+[[nodiscard]] std::optional<double> nightStops()
+{
+    const auto value = setting("OSR_NIGHT_STOPS");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (value == "off")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto stops = 0.0;
+
+    try
+    {
+        stops = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_NIGHT_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_NIGHT_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (stops < -4.0 || stops > 8.0)
+    {
+        throw std::runtime_error("OSR_NIGHT_STOPS is a number of stops and lies between -4 and 8: '" + value + "'.");
+    }
+
+    return stops;
+}
+
+// The cabin's dial, on `OSR_NIGHT_STOPS`' terms: a number of stops, `off` for none — the cabin
+// printed at exactly what its own meter says.
+[[nodiscard]] double cockpitStops()
+{
+    const auto value = setting("OSR_COCKPIT_STOPS");
+    if (value.empty())
+    {
+        return -1.25;
+    }
+
+    if (value == "off")
+    {
+        return 0.0;
+    }
+
+    auto consumed = std::size_t{0};
+    auto stops = 0.0;
+
+    try
+    {
+        stops = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_COCKPIT_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_COCKPIT_STOPS is neither a number of stops nor 'off': '" + value + "'.");
+    }
+
+    if (stops < -8.0 || stops > 4.0)
+    {
+        throw std::runtime_error("OSR_COCKPIT_STOPS is a number of stops and lies between -8 and 4: '" + value + "'.");
+    }
+
+    return stops;
+}
+
+// The moon, on `OSR_SUN`'s terms exactly and for its reason: an elevation has no "off", and unset is
+// not a value but an absence — the rig then places the full moon opposite the sun.
+[[nodiscard]] std::optional<double> moonElevationDegrees()
+{
+    const auto value = setting("OSR_MOON");
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto consumed = std::size_t{0};
+    auto degrees = 0.0;
+
+    try
+    {
+        degrees = std::stod(value, &consumed);
+    }
+    catch (const std::exception&)
+    {
+        throw std::runtime_error("OSR_MOON is not a number of degrees: '" + value + "'.");
+    }
+
+    if (consumed != value.size())
+    {
+        throw std::runtime_error("OSR_MOON is not a number of degrees: '" + value + "'.");
+    }
+
+    if (degrees < -90.0 || degrees > 90.0)
+    {
+        throw std::runtime_error("OSR_MOON is an elevation in degrees and lies between -90 and 90: '" + value + "'.");
     }
 
     return degrees;
@@ -1908,6 +2161,7 @@ RunOptions runOptions()
                       .mirrorLevelFloor = chosenMirrors.levelFloor,
                       .policeLights = policeLights(),
                       .occlusionCulling = occlusionCulling(),
+                      .drawDistanceCulling = drawDistanceCulling(),
                       .tyreTemperature = tyreTemperature(),
                       .tyreThermal = tyreThermal(),
                       .tyrePressure = tyrePressure(),
@@ -1919,6 +2173,9 @@ RunOptions runOptions()
                       .frameAcceleration = frameAcceleration(),
                       .rearWheelRate = rearWheelRate(),
                       .airTemperatureCelsius = airTemperatureCelsius(),
+                      .dashIntensity = dashIntensity(),
+                      .dashOverlay = dashOverlay(),
+                      .metricUnits = metricUnits(),
                       .assists = chosenAssists,
                       .fogDensityScale = lookMultiplier("OSR_FOG"),
                       .skyEyeStops = skyEyeStops(),
@@ -1931,6 +2188,9 @@ RunOptions runOptions()
                       .cloudMarchInterval = cloudMarchInterval(),
                       .cloudMarchStrips = cloudMarchStrips(),
                       .sunElevationDegrees = sunElevationDegrees(),
+                      .moonElevationDegrees = moonElevationDegrees(),
+                      .nightStops = nightStops(),
+                      .cockpitStops = cockpitStops(),
                       .cameraPose = cameraPose(chosenCamera)};
 }
 

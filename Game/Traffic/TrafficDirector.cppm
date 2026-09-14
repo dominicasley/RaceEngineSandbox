@@ -1,6 +1,7 @@
 module;
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -19,8 +20,8 @@ export module osr.game:TrafficDirector;
 
 import :PoliceCar;
 import :PoliceLog;
+import :RoadGraph;
 import :TrafficLog;
-import :TrafficNetwork;
 
 import raceengine;
 
@@ -75,9 +76,11 @@ export struct TrafficSettings
 {
     bool enabled = true;
 
-    // Cars per kilometre of lane. Grand City Parkway carries 35.1 km, so eleven is about 380 cars.
+    // Cars per kilometre of road lane. Grand City Parkway's road graph carries 54.6 km, so eleven is
+    // about 600 cars; the cap is above that so the density is not silently the cap
+    // (docs/road-network-brief.md §3.6).
     double densityPerKilometre = 11.0;
-    std::size_t maximumAgents = 512;
+    std::size_t maximumAgents = 768;
     std::size_t maximumDisturbed = 24;
 
     // How far from the car the vehicle model is offered traffic to hit. Forty metres is well past
@@ -147,7 +150,7 @@ public:
     //
     // `navmesh` is the track's drivable area for the police to route over, or nothing where the
     // track names none (docs/pursuit-navigation-brief.md, stage 1b); the lanes are the road either way.
-    TrafficDirector(raceengine::Engine& engine, const TrafficNetwork& source, const TrafficSettings& settings,
+    TrafficDirector(raceengine::Engine& engine, const RoadGraph& source, const TrafficSettings& settings,
                     std::optional<raceengine::NavMesh> navmesh);
 
     TrafficDirector(const TrafficDirector&) = delete;
@@ -301,35 +304,127 @@ namespace osr
 namespace
 {
 
-// The export's lanes as the engine's traffic module wants them.
+// The road graph's lanes and turns as the engine's traffic module wants them: **the lanes first,
+// then the turns, and a turn is a lane** (docs/road-network-brief.md §3.1). So a lane's index into
+// the sources is its file id and a turn's is `lanes.size()` plus its file id, and every link the
+// file states is carried across by that arithmetic and nothing else.
 //
-// Two things are decided here and nowhere else. The speed limit is the lane's own where it states
-// one and the role's otherwise — CSP writes both and they agree on this map, but a lane that states
-// nothing has to fall back on the class of road it is. And `allowLaneChanges` is carried straight
-// through: it is a property of the road the author stated, not something to derive.
-[[nodiscard]] std::vector<raceengine::LaneSource> laneSourcesFrom(const TrafficNetwork& source)
+// Three things are decided here and nowhere else. The speed limit is the lane's own where it states
+// one and its role's otherwise, in m/s. A road lane allows lane changes and a turn does not — nobody
+// changes lanes inside a junction box — and neither allows a U-turn on the spot, because the ten
+// U-turns the file draws are turns like any other. And a turn's angle goes across in radians with
+// the exporter's sign, left negative, which the engine reads for the corner's speed and for the
+// straight-on.
+[[nodiscard]] std::vector<raceengine::LaneSource> laneSourcesFrom(const RoadGraph& graph)
 {
     auto sources = std::vector<raceengine::LaneSource>();
-    sources.reserve(source.lanes.size());
+    sources.reserve(graph.lanes.size() + graph.turns.size());
 
-    for (const auto& lane : source.lanes)
+    const auto laneCount = graph.lanes.size();
+
+    const auto limitOf = [&](const double kmh, const std::string& role)
     {
-        auto limit = lane.speedLimitKmh / 3.6;
+        auto limit = kmh / 3.6;
 
         if (limit <= 0.0)
         {
-            if (const auto* role = trafficRole(source, lane.role); role != nullptr)
+            if (const auto* found = roadRole(graph, role); found != nullptr)
             {
-                limit = role->speedLimitMetresPerSecond;
+                limit = found->speedLimitKmh / 3.6;
             }
         }
 
+        return limit > 0.0 ? limit : 13.9;
+    };
+
+    const auto turnIndex = [laneCount](const int id) { return laneCount + static_cast<std::size_t>(id); };
+
+    for (const auto& lane : graph.lanes)
+    {
+        auto successors = std::vector<std::size_t>();
+        successors.reserve(lane.successors.size());
+        for (const auto turn : lane.successors)
+        {
+            successors.push_back(turnIndex(turn));
+        }
+
+        auto neighbours = std::vector<std::size_t>();
+        neighbours.reserve(lane.neighbours.size());
+        for (const auto& beside : lane.neighbours)
+        {
+            neighbours.push_back(static_cast<std::size_t>(beside.lane));
+        }
+
         sources.push_back(raceengine::LaneSource{.id = lane.id,
-                                                 .name = lane.name,
-                                                 .speedLimitMetresPerSecond = limit > 0.0 ? limit : 13.9,
-                                                 .allowLaneChanges = lane.params.allowLaneChanges,
-                                                 .allowUTurns = lane.params.allowUTurns,
-                                                 .points = lane.points});
+                                                 .name = "lane " + std::to_string(lane.id) + " of road " +
+                                                         std::to_string(lane.edge),
+                                                 .speedLimitMetresPerSecond = limitOf(lane.speedLimitKmh, lane.role),
+                                                 .allowLaneChanges = true,
+                                                 .allowUTurns = false,
+                                                 .points = lane.points,
+                                                 .statedGraph = true,
+                                                 .kind = raceengine::LaneKind::Road,
+                                                 .successors = std::move(successors),
+                                                 .neighbours = std::move(neighbours)});
+    }
+
+    for (const auto& turn : graph.turns)
+    {
+        const auto kind = [&]
+        {
+            switch (turn.kind)
+            {
+            case RoadTurnKind::Straight:
+                return raceengine::TurnKind::Straight;
+            case RoadTurnKind::Left:
+                return raceengine::TurnKind::Left;
+            case RoadTurnKind::Right:
+                return raceengine::TurnKind::Right;
+            case RoadTurnKind::UTurn:
+                return raceengine::TurnKind::UTurn;
+            }
+
+            return raceengine::TurnKind::Straight;
+        }();
+
+        const auto* kindName = kind == raceengine::TurnKind::Straight ? "straight"
+                               : kind == raceengine::TurnKind::Left  ? "left"
+                               : kind == raceengine::TurnKind::Right ? "right"
+                                                                      : "u-turn";
+
+        auto conflicts = std::vector<std::size_t>();
+        conflicts.reserve(turn.conflicts.size());
+        for (const auto other : turn.conflicts)
+        {
+            conflicts.push_back(turnIndex(other));
+        }
+
+        auto givesWayTo = std::vector<std::size_t>();
+        givesWayTo.reserve(turn.givesWayTo.size());
+        for (const auto other : turn.givesWayTo)
+        {
+            givesWayTo.push_back(turnIndex(other));
+        }
+
+        const auto& fromRole = graph.lanes[static_cast<std::size_t>(turn.fromLane)].role;
+
+        sources.push_back(raceengine::LaneSource{.id = turn.id,
+                                                 .name = std::string("turn ") + std::to_string(turn.id) + " " + kindName +
+                                                         " at node " + std::to_string(turn.node),
+                                                 .speedLimitMetresPerSecond = limitOf(turn.speedLimitKmh, fromRole),
+                                                 .allowLaneChanges = false,
+                                                 .allowUTurns = false,
+                                                 .points = turn.points,
+                                                 .statedGraph = true,
+                                                 .kind = raceengine::LaneKind::Turn,
+                                                 .successors = {static_cast<std::size_t>(turn.toLane)},
+                                                 .neighbours = {},
+                                                 .turn = kind,
+                                                 .turnAngleRadians = glm::radians(turn.angleDegrees),
+                                                 .junction = turn.node,
+                                                 .priority = turn.priority,
+                                                 .conflicts = std::move(conflicts),
+                                                 .givesWayTo = std::move(givesWayTo)});
     }
 
     return sources;
@@ -361,7 +456,7 @@ namespace
 
 } // namespace
 
-TrafficDirector::TrafficDirector(raceengine::Engine& engine, const TrafficNetwork& source,
+TrafficDirector::TrafficDirector(raceengine::Engine& engine, const RoadGraph& source,
                                  const TrafficSettings& chosen, std::optional<raceengine::NavMesh> ground) :
     engine(engine),
     settings(chosen),
@@ -375,18 +470,47 @@ TrafficDirector::TrafficDirector(raceengine::Engine& engine, const TrafficNetwor
 
     auto network = std::move(built).value();
 
-    // What the derivation found, reported once. It is the only place anybody will ever see that a
-    // lane loops or that two lanes are adjacent, because the export states neither — so a city whose
-    // traffic all drives into a dead end is diagnosed from this line rather than from the seat.
-    auto loops = std::size_t{0};
+    // The lights (docs/road-network-brief.md §3.9): one stop line per lane a signal stands over, at
+    // the lane's own end, on the exporter's invented cycle. The engine's `offsetSeconds` is where in
+    // the cycle a light stands at time zero and the file's is when its green begins, so one is the
+    // cycle less the other.
+    auto signalledLanes = std::size_t{0};
+
+    for (const auto& signal : source.signals)
+    {
+        for (auto index = std::size_t{0}; index < signal.lanes.size(); index++)
+        {
+            const auto laneIndex = static_cast<std::size_t>(signal.lanes[index]);
+            if (laneIndex >= network.lanes.size())
+            {
+                continue;
+            }
+
+            const auto stated = index < signal.stopDistanceMetres.size() ? signal.stopDistanceMetres[index] : -1.0;
+            const auto stop = stated >= 0.0 ? stated : raceengine::laneLength(network.lanes[laneIndex]);
+            const auto cycle = signal.greenSeconds + signal.amberSeconds + signal.redSeconds;
+            const auto offset = cycle > 0.0 ? std::fmod(cycle - std::fmod(signal.offsetSeconds, cycle), cycle) : 0.0;
+
+            network.signals.push_back(raceengine::TrafficSignal{.lane = laneIndex,
+                                                                .distanceMetres = stop,
+                                                                .greenSeconds = signal.greenSeconds,
+                                                                .amberSeconds = signal.amberSeconds,
+                                                                .redSeconds = signal.redSeconds,
+                                                                .offsetSeconds = offset});
+            signalledLanes++;
+        }
+    }
+
+    // What the graph carries and what the one derivation left — the adjacency runs, which the file
+    // does not state — reported once: a city whose traffic cannot change lanes, or whose junctions
+    // are not there, is diagnosed from this line rather than from the seat.
     auto links = std::size_t{0};
     auto pairings = std::size_t{0};
     auto pairedMetres = 0.0;
 
     for (const auto& lane : network.lanes)
     {
-        loops += lane.loop ? 1 : 0;
-        links += lane.successors.size();
+        links += lane.kind == raceengine::LaneKind::Road ? lane.successors.size() : 0;
         pairings += lane.neighbours.size();
 
         for (const auto& run : lane.neighbours)
@@ -395,9 +519,14 @@ TrafficDirector::TrafficDirector(raceengine::Engine& engine, const TrafficNetwor
         }
     }
 
-    engine.log().info("Traffic lanes: {} lanes, {:.1f} km, {} loop, {} join on, {} adjacency runs over {:.1f} km of lane",
-                      network.lanes.size(), network.totalLengthMetres / 1000.0, loops, links, pairings,
-                      pairedMetres / 1000.0);
+    engine.log().info("Road graph: {} junctions ({} signalled, {} lights over {} lanes), {} lanes over {:.1f} km of road "
+                      "with {} turns off them over {:.1f} km, {} adjacency runs over {:.1f} km of lane; {:.1f}% of points "
+                      "on the carriageway, {:.0f}% of lanes in one circuit, driving on the {}",
+                      network.junctionCount, source.counts.signalledJunctions, source.signals.size(), signalledLanes,
+                      network.lanes.size() - network.turnCount, network.roadLengthMetres / 1000.0, links,
+                      (network.totalLengthMetres - network.roadLengthMetres) / 1000.0, pairings, pairedMetres / 1000.0,
+                      100.0 * source.pointsOnCarriageway, 100.0 * source.circulation,
+                      source.drive.empty() ? "right (unstated)" : source.drive);
 
     auto options = raceengine::TrafficPopulationOptions{};
     options.densityPerKilometre = settings.densityPerKilometre;
@@ -1104,7 +1233,12 @@ void TrafficDirector::writeLog()
                                           .fz = agent.heading.z,
                                           .jumpMetres = jump,
                                           .police = agent.police,
-                                          .siren = agent.siren});
+                                          .siren = agent.siren,
+                                          .next = agent.nextLane == raceengine::noLane
+                                                      ? std::int32_t{-1}
+                                                      : static_cast<std::int32_t>(agent.nextLane),
+                                          .held = (agent.junctionHeld ? 1 : 0) +
+                                                  (agent.junctionSirenHeld ? 2 : 0)});
         }
 
         memory = LogMemory{.seen = true,
@@ -1143,7 +1277,9 @@ void TrafficDirector::writeLog()
                                       .disturbedSeconds = static_cast<double>(report.refused),
                                       .x = static_cast<double>(report.heldAsPoints),
                                       .y = static_cast<double>(report.dropped),
-                                      .z = static_cast<double>(report.promoted)});
+                                      .z = static_cast<double>(report.promoted),
+                                      .next = static_cast<std::int32_t>(report.heldAtJunctions),
+                                      .held = static_cast<std::int32_t>(report.heldForSirens)});
     }
 
     trafficLog->flush();

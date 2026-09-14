@@ -109,7 +109,7 @@ public:
     // tick by this thread, and anything else that wants to see it asks through a published snapshot.
     // A director owned by the scene and ticked from the frame would be a second writer on a
     // different clock.
-    void enableTraffic(const TrafficNetwork& source, const TrafficSettings& settings,
+    void enableTraffic(const RoadGraph& source, const TrafficSettings& settings,
                        std::optional<raceengine::NavMesh> navmesh);
 
     // Where the traffic is, for the thread that draws it. Empty when there is none.
@@ -271,7 +271,7 @@ SimulatedCar& Simulation::add(const glm::dvec3& grid, const double heading, cons
     return *cars.back();
 }
 
-void Simulation::enableTraffic(const TrafficNetwork& source, const TrafficSettings& settings,
+void Simulation::enableTraffic(const RoadGraph& source, const TrafficSettings& settings,
                                std::optional<raceengine::NavMesh> navmesh)
 {
     if (thread.joinable())

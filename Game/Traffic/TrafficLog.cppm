@@ -54,6 +54,11 @@ export struct TrafficLogRow
     double jumpMetres = 0.0;
     bool police = false;
     bool siren = false;
+    // The lane the car will take when its lane runs out, or −1; and what is holding it at its stop
+    // line: 0 nothing, 1 the give-way rule (docs/road-network-brief.md §3.3, §3.5), 2 a siren closing
+    // on the junction, 3 both.
+    std::int32_t next = -1;
+    std::int32_t held = 0;
 };
 
 export class TrafficLog
@@ -81,11 +86,13 @@ namespace
 
 constexpr auto trafficLogHeader = std::string_view(
     "tick,kind,id,mode,lane,dist,target,progress,slot,lag,still,disturbed,x,y,z,vx,vy,vz,fx,fy,fz,jump,"
-    "police,siren\n"
-    "# kind p: the player -- x y z its position, vx vy vz its velocity, fx fy fz its forward. kind r: the "
+    "police,siren,next,held\n"
+    "# held: 0 nothing, 1 the give-way rule, 2 a siren closing on the junction, 3 both. "
+    "kind p: the player -- x y z its position, vx vy vz its velocity, fx fy fz its forward. kind r: the "
     "population's report -- lane=cruising dist=embodied target=disturbed progress=stopped slot=pursuing "
-    "lag=external still=recycled disturbed=refused x=heldAsPoints y=dropped z=promoted. kind x: the city "
-    "was reseeded on this tick.\n");
+    "lag=external still=recycled disturbed=refused x=heldAsPoints y=dropped z=promoted next=heldAtJunctions "
+    "held=heldForSirens. "
+    "kind x: the city was reseeded on this tick.\n");
 
 } // namespace
 
@@ -105,15 +112,15 @@ void TrafficLog::row(const TrafficLogRow& entry)
         return;
     }
 
-    char line[320];
+    char line[336];
 
     const auto written = std::snprintf(
         line, sizeof line,
-        "%llu,%c,%d,%s,%d,%.2f,%d,%.4f,%d,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%d,%d\n",
+        "%llu,%c,%d,%s,%d,%.2f,%d,%.4f,%d,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%d\n",
         static_cast<unsigned long long>(entry.tick), entry.kind, entry.id, entry.mode, entry.lane,
         entry.distanceMetres, entry.target, entry.progress, entry.slot, entry.lagMetres, entry.stillSeconds,
         entry.disturbedSeconds, entry.x, entry.y, entry.z, entry.vx, entry.vy, entry.vz, entry.fx, entry.fy,
-        entry.fz, entry.jumpMetres, entry.police ? 1 : 0, entry.siren ? 1 : 0);
+        entry.fz, entry.jumpMetres, entry.police ? 1 : 0, entry.siren ? 1 : 0, entry.next, entry.held);
 
     if (written > 0)
     {

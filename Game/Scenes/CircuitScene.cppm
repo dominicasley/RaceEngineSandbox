@@ -4,6 +4,8 @@ module;
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -20,6 +22,8 @@ import :ColliderManifest;
 import :ChaseCameraController;
 import :CockpitCameraController;
 import :FPSCameraController;
+import :Font;
+import :InstrumentCluster;
 import :Options;
 import :PlayerCar;
 import :RaceTrack;
@@ -30,7 +34,7 @@ import :ProbeCache;
 import :TrackFrame;
 import :TrafficCars;
 import :TrafficDirector;
-import :TrafficNetwork;
+import :RoadGraph;
 import :WiperController;
 
 import raceengine;
@@ -67,12 +71,13 @@ private:
     // spend. Declared before everything that queries them, the engine's own member-order rule.
     raceengine::Resource<raceengine::Model> trackModel;
     raceengine::Resource<raceengine::Model> physicsModel;
-    // The circuit's third file, and the only one that is optional: CSP's traffic lane graph, where
-    // the track states one. It is loaded for the street light probes below — a lane is where a
-    // street is, and a street is where the sky is boxed in — and it is *held* rather than read and
-    // dropped because the thing that reads the rest of it is traffic, which is next. Nothing on a
-    // circuit with no lanes sets this.
-    std::optional<TrafficNetwork> traffic;
+    // The circuit's third file, and the only one that is optional: the derived road graph, where
+    // the track states one (docs/road-network-brief.md; CSP's own lane export until 2026-09-14). It
+    // is loaded for the street light probes below — a road is where a street is, and a street is
+    // where the sky is boxed in — and it is *held* rather than read and dropped because the thing
+    // that reads the rest of it is traffic, which is next. Nothing on a circuit with no roads sets
+    // this.
+    std::optional<RoadGraph> traffic;
     // The drawn half of the breakable props, and the wiring that lets one of them move.
     //
     // **One renderable for all 3712 of them, and every prop moves through
@@ -119,7 +124,15 @@ private:
     // measured in a world that was one dark ribbon in a void, and the meter that saw that world
     // opened two stops further than the same view deserves with scenery in it. At -1.25 the road
     // ahead keeps its markings, the pit wall reads as concrete and the cabin stays legible.
-    static constexpr float cockpitCompensation = -1.25f;
+    //
+    // **`OSR_COCKPIT_STOPS` since 2026-09-15, because -1.25 is measured against the wrong base and
+    // has been since split metering landed.** It was tuned when the cockpit metered the whole frame;
+    // the cabin now meters *its own pixels*, which is a reading several stops darker, so the same
+    // shove lands somewhere else entirely. What the seat reports is the consequence — **a cockpit
+    // view brighter than an outside view of the same world, at every hour and not only at night**.
+    // The number is a look decision and this is the run-time way at it; the default is left exactly
+    // where it was, so nothing moves until the seat says where to.
+    float cockpitCompensation = -1.25f;
     std::optional<FPSCameraController> freeCamera;
 
     // Whether the free camera is currently flying, and the edge state of the key that toggles it.
@@ -160,6 +173,8 @@ private:
     // the render rig creates down there out of a file this scene awaits.
     std::optional<CarEntity> car;
     std::optional<PlayerCar> player;
+    // The face the dashboard's readouts are set in; the cluster holds a pointer to it.
+    std::optional<Font> dashFont;
 
     // The rain's airflow phase, accumulated here because the shader is stateless: a drop's
     // position is the airstream's shear *integrated*, and handing the shader only the current
@@ -168,7 +183,32 @@ private:
     // of the tick count under a capture, so a captured frame N carries the same value on every
     // machine. Double, because a float accumulating 8 ms slices loses its low bits within a lap
     // or two.
+    // The dash-flicker probes' state (`docs/instrument-cluster-brief.md` §7); what they measure is
+    // at the one place they are used, in update(). Both off unless their variable is set.
+    bool cabinMeterFrozen = []
+    {
+        const auto* value = std::getenv("OSR_CABIN_METER");
+        return value != nullptr && std::string_view(value) == "off";
+    }();
+    std::FILE* exposureLog = []() -> std::FILE*
+    {
+        const auto* path = std::getenv("OSR_EXPOSURE_LOG");
+        if (path == nullptr)
+        {
+            return nullptr;
+        }
+        auto* file = std::fopen(path, "w");
+        if (file != nullptr)
+        {
+            std::fprintf(file, "tick,worldExposure,cabinExposure,frameExposure,screenExposureScale\n");
+        }
+        return file;
+    }();
+    unsigned long long exposureLogTick = 0;
     bool raining = false;
+    // Whether the rig built a night. The cabin's meter is the one thing that has to know: see
+    // `RigBuild::night` and the split below.
+    bool night = false;
     double rainAirflowPhase = 0.0;
 
     // The airspeed the *water* is responding to, which lags the car's. Water on glass has mass and
@@ -430,6 +470,16 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     const auto cloudBlend = options.cloudBlendWeight.has_value()
                                 ? std::optional<float>(static_cast<float>(options.cloudBlendWeight.value()))
                                 : std::optional<float>{};
+    // The moon, on the blend weight's terms: unset is an absence the rig resolves into the full
+    // moon opposite the sun, and is a different thing from any angle this scene could name.
+    const auto moonElevation = options.moonElevationDegrees.has_value()
+                                   ? std::optional<float>(static_cast<float>(options.moonElevationDegrees.value()))
+                                   : std::optional<float>{};
+    // The night's hold-back, on the same terms: unset is an absence the rig derives from the eye, and
+    // is a different thing from any number of stops this scene could name.
+    const auto nightStops = options.nightStops.has_value()
+                                ? std::optional<float>(static_cast<float>(options.nightStops.value()))
+                                : std::optional<float>{};
 
     const auto rig = buildRenderRig(engine, scene, camera, 30000.0f,
                                     RigAir{.baseHeight = static_cast<float>(track.fogBaseHeightMetres *
@@ -438,6 +488,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                            .skyEyeStops = static_cast<float>(options.skyEyeStops),
                                            .probeDistanceMarch = options.probeDistanceMarch,
                                            .sunElevationDegrees = static_cast<float>(options.sunElevationDegrees),
+                                           .moonElevationDegrees = moonElevation,
+                                           .nightStops = nightStops,
                                            .rain = static_cast<float>(options.rainIntensity),
                                            .clouds = static_cast<float>(options.cloudCoverage),
                                            .cloudMapWidth = options.cloudMapWidth,
@@ -449,13 +501,16 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                     // The mirrors are the cockpit's: a chase or free camera looks at
                                     // the car's mirrors from outside, where they show the asset's
                                     // own glass, and the driving gate captures the chase camera.
-                                    options.camera == CameraChoice::Cockpit && options.mirrors);
+                                    options.camera == CameraChoice::Cockpit && options.mirrors,
+                                    options.drawDistanceCulling);
     sky = rig.sky;
     carCamera = rig.carCamera;
     frameCamera = rig.frameCamera;
     mirrorCamera = rig.mirrorCamera;
     composite = rig.composite;
     cloudCoverage = rig.cloudCoverage;
+    night = rig.night;
+    cockpitCompensation = static_cast<float>(options.cockpitStops);
     cloudMarch.bind(rig);
     raining = options.rainIntensity > 0.0;
 
@@ -471,7 +526,19 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         engine.log().info("No car audio: {}", sound.error());
     }
 
-    if (cockpitCamera)
+    // **One meter at night, and the split is the thing being switched off rather than retuned.**
+    //
+    // The split exists because a sunlit world stands several stops above a cabin, and one meter
+    // cannot serve both. Under a moon that range collapses: the cabin and the street are lit by the
+    // same body through the same glass, a few stops apart, which is one exposure's worth. Left split
+    // it inverts — the cabin meters its own pixels and prints itself at middle grey however dark it
+    // is, that reading then becomes the frame's, and the world rides the composite as a ratio
+    // *against* a cabin the meter has just lifted. The dash comes out brighter than the street.
+    //
+    // Switched off rather than given a night value of `cockpitCompensation`, because a second dial
+    // would be a second number nobody has measured standing in for a range that is not there. One
+    // meter is what a camera would do, and the frame meter already carries the hour's own dial.
+    if (cockpitCamera && !night)
     {
         // A cockpit is a different photographic problem from every other view this game has, and
         // under the layered frame it finally gets the honest answer: the meters split. The world
@@ -774,6 +841,35 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // thin air. A start box states a heading, which is the other thing an AI line cannot.
     const auto& slot = track.grid.front();
 
+    // The road graph, ahead of the car, because the spawn is read off it.
+    if (!track.trafficAsset.empty())
+    {
+        traffic = orThrow(loadRoadGraph(std::string(track.trafficAsset)));
+    }
+
+    // Where the car is put down. The authored boxes are on the concrete apron beside the parkway —
+    // every slot probes onto the kerb at 0.15 m — so on a track with a road graph the spawn is the
+    // nearest place on a **kerb lane**: on the road, in the lane by the pavement, facing the way the
+    // lane runs (2026-09-14, Dominic: "move the player spawn location to be on the road closest the
+    // kerb facing the right way"). A circuit keeps its box. The restart key puts the car back here.
+    auto spawnPosition = slot.position;
+    auto spawnHeading = glm::radians(slot.yaw);
+
+    if (traffic)
+    {
+        if (const auto place = nearestKerbLanePlace(*traffic, slot.position); place)
+        {
+            spawnPosition = place->positionMetres;
+            // `GridSlot`'s own convention: right-handed about +y, taking +z onto the heading.
+            spawnHeading = std::atan2(place->direction.x, place->direction.z);
+
+            engine.log().info("Spawn: on the road — lane {} of road {} at {:.0f} m along it, {:.1f} m from the authored "
+                              "slot, heading {:.0f} deg",
+                              place->laneId, place->edgeId, place->distanceAlongMetres, place->offsetMetres,
+                              glm::degrees(spawnHeading));
+        }
+    }
+
     // The weather, from the one number this run states and the sun the scene is already lit by —
     // which is the sun's own pattern: state the hour, derive the sky, the probes, the fog and now
     // the road's temperature from it. `OSR_TYRE_TEMP=ambient` is resolved against it here, because
@@ -795,12 +891,201 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     }();
 
     simulatedCar =
-        &simulation->add(slot.position, glm::radians(slot.yaw), options.driver, 0.001 * options.beltBridgingMillimetres,
+        &simulation->add(spawnPosition, spawnHeading, options.driver, 0.001 * options.beltBridgingMillimetres,
                          options.geometricLoadPath, options.drivelineReaction, options.tyreThermal,
                          options.tyreContactConductance, options.tyreRoadAreaFraction, options.tyreIdealTemperature,
                          options.tyrePressure, options.brakeThermal, options.kerbContact, options.frameAcceleration,
                          options.rearWheelRate, startingTyreTemperature, ambient, options.assists);
     player.emplace(engine, *simulatedCar, car->sceneNode(), car->renderableModel(), options.rackTrace);
+
+    // The instrument cluster's displays (docs/instrument-cluster-brief.md §6): one canvas the
+    // cluster draws its readouts into every tick, before any view, and two of the car's meshes —
+    // `cluster_digi`, the displays in the dials, and `cluster_digi_nav`, the one between them —
+    // whose materials become screens: the pbr shader's `screen` variant composites the canvas over
+    // the shaded display through each material's own region of it. Found by the mesh's name, which
+    // the exporter keeps, and not the material's, which is an auto-name (`Material #445`).
+    {
+        constexpr auto canvasWidth = static_cast<unsigned int>(InstrumentCluster::canvasWidth);
+        constexpr auto canvasHeight = static_cast<unsigned int>(InstrumentCluster::canvasHeight);
+        const auto screenFbo = orThrow(engine.fbo().create(raceengine::CreateFboDTO{
+            .type = raceengine::FboType::Planar,
+            .attachments = {raceengine::CreateFboAttachmentDTO{.width = canvasWidth,
+                                                               .height = canvasHeight,
+                                                               .type = raceengine::FboAttachmentType::Color,
+                                                               .captureFormat = raceengine::TextureFormat::RGBA,
+                                                               .internalFormat = raceengine::TextureFormat::RGBA,
+                                                               .initialColour = glm::vec4(0.0f)}}}));
+        const auto screenColour = engine.fbo().getAttachmentsOfType(
+            engine.memoryStorage().frameBuffers.get(screenFbo), raceengine::FboAttachmentType::Color);
+        if (screenColour.empty())
+        {
+            raceengine::fail("the dashboard's screen canvas has no colour attachment");
+        }
+        scene.screenMap = screenColour.front();
+        const auto canvasShader = shaderNamed(engine, "canvas");
+        auto& screenCanvas = scene.canvases.emplace_back(raceengine::Canvas{.shader = canvasShader,
+                                                                            .target = screenColour.front(),
+                                                                            .clear = true,
+                                                                            .clearColour = glm::vec4(0.0f),
+                                                                            .batches = {}});
+        raceengine::Canvas* overlay = nullptr;
+        if (options.dashOverlay)
+        {
+            overlay = &scene.canvases.emplace_back(raceengine::Canvas{.shader = canvasShader,
+                                                                      .target = std::nullopt,
+                                                                      .clear = false,
+                                                                      .clearColour = glm::vec4(0.0f),
+                                                                      .batches = {}});
+        }
+
+        const auto screenShader = shaderNamed(engine, "screen");
+        // **`OSR_SCREENS=off`, the dash-flicker probe** (`docs/instrument-cluster-brief.md` §7). The
+        // two meshes that vanish from the seat are the only two this block turns into screens, and
+        // the trace says they are therefore the only two drawn by the SCREEN_OVERLAY pipeline —
+        // every other primitive in the same blended stack, the needles and `mph` and the warning
+        // icons, keeps its own shader and keeps drawing. Set, this leaves both meshes on their
+        // exporter material and the ordinary shader: no readouts, the printed dial only. If the
+        // flicker stops, the screen path is the cause; if it does not, the screen path is out and
+        // what those two meshes share is something else.
+        const auto screensOff = []
+        {
+            const auto* value = std::getenv("OSR_SCREENS");
+            return value != nullptr && std::string_view(value) == "off";
+        }();
+        const auto* model = engine.memoryStorage().models.find(car->renderableModel().model);
+        auto screens = 0;
+        if (model != nullptr)
+        {
+            for (const auto& meshKey : model->meshes)
+            {
+                const auto* mesh = engine.memoryStorage().meshes.find(meshKey);
+                if (mesh == nullptr)
+                {
+                    continue;
+                }
+                const auto rect = mesh->name == "cluster_digi"       ? InstrumentCluster::dialScreenRect
+                                  : mesh->name == "cluster_digi_nav" ? InstrumentCluster::middleScreenRect
+                                                                     : glm::vec4(0.0f);
+                if (screensOff || rect.z == 0.0f)
+                {
+                    continue;
+                }
+                // **Each display mesh gets its own copy of its material, and the strays keep the
+                // original.** The exporter shares one material between meshes that have nothing to do
+                // with each other: `Material #445` belongs to `cluster_digi` *and* to a 12.6 x 5.4 mm
+                // blanking quad named `blank` on the speedo face, and `digi_nav` to `cluster_digi_nav`
+                // *and* to `cluster_digi_nav_l` — AC's lit nav layer, the same panel over again 12.7 mm
+                // behind the real one with its UV island 0.043 further up the sheet. Mutating the
+                // shared material made screens of all four, so two meshes the game never chose were
+                // compositing the canvas through whatever UVs they happened to carry.
+                //
+                // **Measured, so the claim is bounded** (`OSR_HIDE_MESH`, the same capture frame
+                // diffed): `blank` really does draw — a 16 x 8 px patch at the bottom right of the
+                // middle display — and `cluster_digi_nav_l` is hidden by the panel in front of it and
+                // changes not one pixel. So this fixes one visible stray and one latent one. It is
+                // **not** the shape Dominic reported under the centre section: that is there with no
+                // screens bound at all.
+                //
+                // The copies are made and added before the mesh is mutated, so no lock on `materials`
+                // is ever held inside one on `meshes`.
+                std::vector<std::optional<raceengine::Resource<raceengine::Material>>> replacements;
+                replacements.reserve(mesh->meshPrimitives.size());
+                for (const auto& primitive : mesh->meshPrimitives)
+                {
+                    const auto* shared =
+                        primitive.material.has_value()
+                            ? engine.memoryStorage().materials.find(primitive.material.value())
+                            : nullptr;
+                    if (shared == nullptr)
+                    {
+                        replacements.emplace_back();
+                        continue;
+                    }
+
+                    auto own = *shared;
+                    own.screen = raceengine::ScreenSurface{.rect = rect,
+                                                           .intensity = static_cast<float>(options.dashIntensity)};
+                    own.declaredShaderHandle = screenShader;
+                    own.shader = screenShader;
+                    replacements.push_back(engine.memoryStorage().materials.add(std::move(own)));
+                    screens++;
+                }
+
+                engine.memoryStorage().meshes.mutate(
+                    meshKey,
+                    [&](raceengine::Mesh& liveMesh)
+                    {
+                        const auto count = std::min(replacements.size(), liveMesh.meshPrimitives.size());
+                        for (auto index = std::size_t{0}; index < count; index++)
+                        {
+                            if (replacements[index].has_value())
+                            {
+                                liveMesh.meshPrimitives[index].material = replacements[index];
+                            }
+                        }
+                    });
+            }
+        }
+
+        // **`OSR_HIDE_MESH`, a comma-separated list of the car's mesh names, hidden.** The one
+        // instrument that answers "which mesh draws that?" without a device or a capture tool: hide a
+        // name, take the same deterministic frame, diff the two. It found both of the cluster's stray
+        // screens in two runs on 2026-09-14 — `cluster_digi_nav_l` draws a 29 x 9 px sliver from
+        // behind the middle display and `blank` a patch on the speedo face. Exact names, never
+        // substrings: `cluster_digi` is a prefix of `cluster_digi_nav` and a loose match hid five
+        // meshes instead of one.
+        // **The duplicate dial print, hidden for good** (`docs/instrument-cluster-brief.md` §7). The
+        // exporter emits a second copy of the cluster face — null node `cluster_digi001`, child
+        // `cluster_digi001.001`, mesh `cluster_digi001` — near-coplanar with the real `cluster_digi`
+        // and, like it, **blended**. A blended draw tests depth and never writes it, so nothing but
+        // the sort decides which of two coplanar blended panels ends up on top; when the duplicate
+        // sorts second it composites over the real one and paints the dial print out. That is the
+        // whole of the dash flicker, and it is why every measurement that asked *whether the draw
+        // happened* came back clean: it always happened, and was then covered.
+        //
+        // **Here and not in the asset.** Dominic deleted the mesh from the glb and that fixed it,
+        // but assets are gitignored and re-exported from `~/dev/ac-car-data`, so the next export
+        // brings it back (and `docs/asset-loss.md` is what a stale checkout has already cost here).
+        // Both spellings, because the name that carries the mesh differs from the name Blender shows.
+        for (const auto* stray : {"cluster_digi001", "cluster_digi001.001"})
+        {
+            auto& renderable = car->renderableModel();
+            for (auto index = std::size_t{0}; index < renderable.meshes.size(); index++)
+            {
+                const auto* named = engine.memoryStorage().meshes.find(renderable.meshes[index].mesh);
+                if (named != nullptr && named->name == stray)
+                {
+                    renderable.meshes[index].visible = false;
+                    engine.log().info("Hidden the cluster's duplicate dial print: {}", named->name);
+                }
+            }
+        }
+
+        if (const auto* hide = std::getenv("OSR_HIDE_MESH"); hide != nullptr)
+        {
+            const auto wanted = std::string(hide);
+            auto& renderable = car->renderableModel();
+            for (auto index = std::size_t{0}; index < renderable.meshes.size(); index++)
+            {
+                const auto* named = engine.memoryStorage().meshes.find(renderable.meshes[index].mesh);
+                const auto hit = named != nullptr && !named->name.empty() &&
+                                 ("," + wanted + ",").find("," + named->name + ",") != std::string::npos;
+                if (hit)
+                {
+                    renderable.meshes[index].visible = false;
+                    engine.log().info("Hidden mesh: {}", named->name);
+                }
+            }
+        }
+
+        dashFont.emplace(engine, "assets/Fonts/archivo");
+        player->instrumentCluster().attachScreen(screenCanvas, overlay, *dashFont, options.airTemperatureCelsius,
+                                                 options.metricUnits);
+        engine.log().info("Dashboard screen: {} display material(s) of the car composited from a {}x{} canvas at "
+                          "intensity {}{}",
+                          screens, canvasWidth, canvasHeight, options.dashIntensity,
+                          overlay != nullptr ? ", and drawn over the frame" : "");
+    }
 
     // The image-based lighting graph, and it is one node rather than three.
     //
@@ -828,22 +1113,28 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
                                                // box photographs the void below its horizon.
                                                .farClippingPlane = 55000.0f}));
 
-    // ...and the city's local ones, which are read off the traffic export rather than authored
-    // here. `grand_city_parkway_traffic.json` is CSP's lane graph, and the one property of it that
-    // makes this possible is that its points are sampled *onto* the road surface rather than
-    // floated at a recording car's ride height, the way an AC AI line is: a lane point plus a
-    // stated height is a probe standing over the road by exactly that height. Where a lane runs is
-    // where a street is, and a street is the one place in this world where the sky is boxed in —
-    // which is the whole of why a city wants local probes and a circuit does not.
+    // ...and the city's local ones, which are read off the road graph rather than authored here.
+    // `grand_city_parkway_roads.json` is the exporter's derived road network, and the one property
+    // of it that makes this possible is that its centre lines are measured *on* the road surface
+    // rather than floated at a recording car's ride height, the way an AC AI line is: a road point
+    // plus a stated height is a probe standing over the road by exactly that height. Where a road
+    // runs is where a street is, and a street is the one place in this world where the sky is boxed
+    // in — which is the whole of why a city wants local probes and a circuit does not. One line per
+    // road rather than one per lane (2026-09-14; the CSP lanes before it), so the two carriageways
+    // of a street share their probes and the whole city, not half of it, is covered.
     //
-    // **Every stand gets a probe — 220 of them — against a frame that shades eight.** That is not
+    // **Every stand gets a probe — 220 of them — against a frame that shades sixteen.** That is not
     // an overrun: the two halves of a probe cost three orders of magnitude apart, and only the
     // expensive one is rationed. The diffuse half is nine coefficients, 144 bytes, and every probe
     // keeps its own; the specular half is a megabyte of prefiltered cube, and a probe past the
     // pool borrows the scratch slice to be photographed and hands it straight back
     // (`RenderContract.cppm`, `probeSpecularSlices`). Each view then shades from the global probe
-    // plus the seven local ones nearest it, and a fragment inside a box whose probe did not make
-    // that cut reflects the global probe, which is what it did before any of this existed.
+    // plus the fifteen local ones nearest it, and a fragment inside a box whose probe did not make
+    // that cut reflects the global probe, which is what it did before any of this existed. **A
+    // probe is faded out before the cut can drop it** (2026-09-13, `probeFadeStartUnits`): with
+    // seven local slots the cut fell a median 100.8 m away and a whole 70 m box of street switched
+    // between the sky and the street in one frame, which is what the seat saw as things popping
+    // darker on approach.
     //
     // **The seven real slices follow the car** (2026-09-13, `EngineImpl.cpp`, the probe scheduler):
     // a slice held by a probe the view no longer wants is handed to the nearest one without, which
@@ -854,14 +1145,12 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
     // **Ordered outwards from the car**, and that order decides what a cold run looks like in its
     // first seconds and which probes the scheduler photographs first before the pool has found the
     // car. The street the car is standing in is the one that has to be right.
-    if (!track.trafficAsset.empty())
+    if (traffic)
     {
-        traffic = orThrow(loadTrafficNetwork(std::string(track.trafficAsset)));
-
-        const auto probeOptions = LaneProbeOptions{};
-        auto candidates = laneProbePositions(*traffic, probeOptions);
+        const auto probeOptions = RoadProbeOptions{};
+        auto candidates = roadProbePositions(*traffic, probeOptions);
         const auto standCount = candidates.size();
-        const auto stands = nearestLaneProbes(std::move(candidates), slot.position, standCount);
+        const auto stands = nearestRoadProbes(std::move(candidates), slot.position, standCount);
 
         for (const auto& stand : stands)
         {
@@ -870,8 +1159,8 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
             static_cast<void>(engine.lightProbe().createProbe(
                 scene,
                 raceengine::CreateLightProbeDTO{
-                    .name = "street lane " + std::to_string(stand.laneId) + " at " +
-                            std::to_string(static_cast<int>(stand.distanceAlongLaneMetres)) + " m",
+                    .name = "street road " + std::to_string(stand.edgeId) + " at " +
+                            std::to_string(static_cast<int>(stand.distanceAlongMetres)) + " m",
                     .position = glm::vec3(static_cast<float>(placed.x), static_cast<float>(placed.y),
                                           static_cast<float>(placed.z)),
                     // Thirty-five metres across against a sixty-metre spacing, so two neighbours
@@ -907,6 +1196,16 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         probeCachePath = (slash == std::string::npos ? std::string() : asset.substr(0, slash + 1)) + "probe-cache.bin";
         probeCacheKey = ProbeCacheKey{.track = std::string(track.id),
                                       .sunElevationDegrees = options.sunElevationDegrees,
+                                      // The elevation that decided the capture: the moon's while the
+                                      // moon is the body, zero while the sun is. Restated here from
+                                      // the rig's own hand-over point (-18 degrees, astronomical
+                                      // twilight) and **must not drift from it** — a key that
+                                      // disagreed about which body was up would serve a moonlit city
+                                      // a daylight cache.
+                                      .moonElevationDegrees =
+                                          options.sunElevationDegrees < -18.0
+                                              ? options.moonElevationDegrees.value_or(-options.sunElevationDegrees)
+                                              : 0.0,
                                       .cloudCoverage = options.cloudCoverage,
                                       .spacingMetres = probeOptions.spacingMetres,
                                       .heightMetres = probeOptions.heightMetres,
@@ -939,8 +1238,10 @@ CircuitScene::CircuitScene(raceengine::Engine& engine, const RunOptions& options
         // cannot be written is reported once rather than once a frame.
         probeCacheWritten = restored;
 
-        engine.log().info("Traffic network {}: {} lanes, {} m; {} probe stands, {} probes placed, cache {}",
-                          track.trafficAsset, traffic->lanes.size(), traffic->counts.totalLaneLengthMetres, standCount,
+        engine.log().info("Road graph {}: {} roads over {:.0f} m, {} lanes, {} turns through {} nodes; {} probe stands, "
+                          "{} probes placed, cache {}",
+                          track.trafficAsset, traffic->edges.size(), traffic->counts.roadLengthMetres,
+                          traffic->lanes.size(), traffic->turns.size(), traffic->nodes.size(), standCount,
                           scene.probes.size(), restored ? "restored" : "to be baked");
     }
 
@@ -1201,9 +1502,13 @@ void CircuitScene::toggleFreeCamera()
 
     cockpitCamera.emplace(engine);
     // Back into the seat, back onto split meters — the cabin's own dial included, and the cabin's
-    // roof with it.
-    splitExposure(engine, camera, *carCamera, *frameCamera);
-    carCamera->autoExposure.compensation = cockpitCompensation;
+    // roof with it. Not at night: the range the split answers is not there under a moon, and the
+    // account is on the build's own call above.
+    if (!night)
+    {
+        splitExposure(engine, camera, *carCamera, *frameCamera);
+        carCamera->autoExposure.compensation = cockpitCompensation;
+    }
     carCamera->rainScale = 0.0f;
 }
 
@@ -1443,20 +1748,64 @@ void CircuitScene::update(float delta)
     // The cockpit's split meters, carried across every tick the seat view is live: the cabin's
     // reading onto the shared lens, the world's onto the composite. A tick behind the meters, which
     // the adaptation's own seconds-long closing makes invisible.
-    if (cockpitCamera)
+    if (cockpitCamera && !night)
     {
         applySplitExposure(engine, camera, *carCamera, *frameCamera, composite);
+    }
+
+    // **Two probes for the dash flicker** (`docs/instrument-cluster-brief.md` §7), both off unless
+    // set. Under split metering the cabin's meter is the one number that reaches everything the seat
+    // reports flickering, and it reaches them with *opposite signs*: the shared tone map multiplies
+    // by `frameCamera->exposure` and `screenExposureScale` below divides by it. So a meter that
+    // moves between frames darkens the cluster's print and readouts and brightens the control lamps
+    // in the same frame, while the world — which the composite lays in at its own meter's ratio —
+    // does not move at all. That is why it has never read as exposure from the seat, and it is the
+    // one input the deterministic capture path cannot exercise, because it settles when the device
+    // is serialised. `OSR_CABIN_METER=off` freezes the cabin's meter, which makes every number below
+    // constant for the run: if the flicker stops, this is it. `OSR_EXPOSURE_LOG` writes the numbers
+    // per tick so a run that still flickers says what the meter actually did.
+    if (cabinMeterFrozen && cockpitCamera)
+    {
+        carCamera->autoExposure.enabled = false;
+        camera.autoExposure.enabled = false;
+    }
+    if (exposureLog != nullptr)
+    {
+        std::fprintf(exposureLog, "%llu,%.6f,%.6f,%.6f,%.6f\n", static_cast<unsigned long long>(exposureLogTick++),
+                     static_cast<double>(camera.exposure), static_cast<double>(carCamera->exposure),
+                     static_cast<double>(frameCamera->exposure),
+                     static_cast<double>(1.0f / std::max(cockpitCamera ? frameCamera->exposure : camera.exposure,
+                                                         1e-6f)));
+        std::fflush(exposureLog);
     }
 
     // The mirror, aimed from the car and not from the head, and its picture exposed as the world is:
     // the same ratio the composite lays the world under the windscreen at, and one whenever the
     // meters are linked — the free camera, where a mirror glimpsed from outside shows the world at
     // the frame's own number.
+    // The dashboard's readouts held at one place on the tone curve: the reciprocal of the exposure
+    // of the camera that draws the car — the cabin's own meter in the cockpit, the one meter
+    // elsewhere — so the displays read the same at dusk and at noon, which is what a cluster that
+    // dims itself does (docs/instrument-cluster-brief.md §6.5).
+    scene.screenExposureScale = 1.0f / std::max(cockpitCamera ? frameCamera->exposure : camera.exposure, 1e-6f);
+
     if (mirrorCamera != nullptr)
     {
         aimDriverMirror(engine, *mirrorCamera, player->vehicle());
 
-        const auto ratio = cockpitCamera ? camera.exposure / std::max(frameCamera->exposure, 1e-6f) : 1.0f;
+        // **Gated on the meters being split, not on a cockpit existing** (2026-09-15). The two were
+        // the same thing until a night stopped splitting them, and then they were not: with the
+        // split off the world camera's meter is quiet, so `camera.exposure` holds whatever the scene
+        // seeded it with at build — a dawn's number — while `frameCamera->exposure` is the live
+        // night. The ratio came out enormous and the glass showed a **daylit** world behind a car
+        // driving at midnight. Linked meters mean one exposure for the whole frame, and a ratio of
+        // one is what says so.
+        //
+        // The mirror *camera's* own three legs are not the fix and never were: it has no post chain,
+        // so the map it renders is scene-referred radiance and its `exposure` is read by nothing.
+        // This ratio is the whole of how a mirror is exposed.
+        const auto splitMeters = cockpitCamera && !night;
+        const auto ratio = splitMeters ? camera.exposure / std::max(frameCamera->exposure, 1e-6f) : 1.0f;
         orThrow(engine.scene().setMirrorExposure(scene, ratio));
 
         // The view the curved door mirrors project their reflections into: the camera as just

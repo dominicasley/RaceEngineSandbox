@@ -28,7 +28,7 @@ struct Light {
 struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;
-    vec4 boxMax;               // w non-zero for the scene's global probe
+    vec4 boxMax;               // w the fade in [0,1], negative for the global probe
     vec4 position;
 };
 
@@ -65,6 +65,14 @@ layout(set = SET_FRAME, binding = 0) uniform FrameData {
     vec4 rainBody;
     vec4 cloudParams;          // x effective coverage, y stratus-to-cumulus type,
                                // z the eye's sky gain (one in a probe capture), w reserved
+    // Three of the mirror's, declared only to reach what stands after them: a block may be a prefix
+    // of its buffer and never a subset of it, so the sky's own fields cannot be read without them.
+    vec4 mirrorParams;
+    vec4 mirrorAxis;
+    vec4 mirrorUp;
+    vec4 skyParams;            // x the integral's solar intensity scale — ONE for the sun, 1/398107
+                               // for the full moon; y the irradiance of a magnitude-zero star, zero
+                               // by day and in every probe capture; z and w reserved
 } frame;
 
 // The cloud dome map, beside the cascades on the scene shadow set: rgb the clouds' in-scattered
@@ -135,6 +143,78 @@ vec2 rsi(vec3 r0, vec3 rd, float sr) {
     );
 }
 
+// A grid cell to three numbers in [0,1): Hoskins' hash33, integer-free on purpose. The stars have
+// to stand in the same place on every machine and in every capture, exactly as the cloud map does,
+// and a hash that went through an integer bit pattern would be the one thing in this sky a driver
+// could disagree about.
+vec3 starHash(vec3 p)
+{
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yzz) * p.zyx);
+}
+
+// The stars, as radiance added to whatever the atmosphere left.
+//
+// **A star is a point source, so a pixel does not show its radiance** — that is a surface brightness
+// no display has ever needed — **but its irradiance spread over the pixel's own solid angle**, which
+// is why this takes the pixel from the ray's screen derivatives instead of drawing a dot of some
+// chosen size. Drawn as a Gaussian about a pixel and a half across with its integral held at the
+// star's irradiance, so the field neither crawls as the head turns nor changes brightness with the
+// window: at twice the resolution each star lands on a quarter the solid angle and four times the
+// radiance, which is the same star.
+//
+// `zeroMagnitude` is the irradiance of a magnitude-zero star in the engine's own units, derived in
+// RenderRig.cppm against the sun's own apparent magnitude. Everything here is dimensionless beside
+// it, which is what keeps the sky's one anchor on the CPU where the sun's is.
+vec3 starField(vec3 ray, float zeroMagnitude)
+{
+    // The pixel, as a solid angle on the unit sphere: the cross product of the ray's two screen
+    // derivatives is exactly the area one pixel covers there. **Taken before the density branch
+    // below**, because a derivative inside non-uniform control flow is undefined and the branch is
+    // per-pixel.
+    float pixelSolidAngle = max(length(cross(dFdx(ray), dFdy(ray))), 1e-12);
+
+    // The sphere cut into cells about a fifth of a degree across, a star in some of them. One cell
+    // is enough rather than the usual twenty-seven: the star is jittered into the middle 60% of its
+    // own cell, which leaves a margin some ten pixels wide against a spot that is one, so no star
+    // ever reaches out of the cell that owns it.
+    const float starCells = 180.0;
+    // What fraction of cells hold one, for roughly six thousand over the whole sphere — the naked
+    // eye's limit under a dark sky, which is also where the magnitude distribution below stops.
+    const float starDensity = 0.0090;
+    const float faintestMagnitude = 6.0;
+
+    vec3 cell = floor(ray * starCells);
+    vec3 h = starHash(cell);
+    if (h.x >= starDensity)
+    {
+        return vec3(0.0);
+    }
+
+    vec3 jitter = starHash(cell + 17.0) - 0.5;
+    vec3 starDirection = normalize(cell + 0.5 + jitter * 0.6);
+
+    // The magnitude. Star counts grow about three-fold per magnitude, so a hash uniform in [0,1)
+    // becomes a magnitude through a log base three: one star in a thousand comes out brighter than
+    // zero, which is about what the real sky holds above the horizon.
+    float u = max(h.x / starDensity, 1e-4);
+    float magnitude = faintestMagnitude + log(u) / log(3.0);
+    float irradiance = zeroMagnitude * pow(10.0, -0.4 * magnitude);
+
+    float sigma = 0.62 * sqrt(pixelSolidAngle);
+    float separation = acos(clamp(dot(ray, starDirection), -1.0, 1.0));
+    float spot = exp(-0.5 * separation * separation / (sigma * sigma));
+
+    // Colour: the main sequence runs from the blue-white of an A star to the orange of a K, and the
+    // third hash lane picks a place along it. Both ends are normalised to the same luminance, so a
+    // star's temperature moves its hue and never the magnitude just stated.
+    const vec3 warmStar = vec3(1.232, 0.960, 0.717);
+    const vec3 coolStar = vec3(0.894, 1.000, 1.319);
+
+    return mix(warmStar, coolStar, h.z) * (irradiance * spot / (6.2831853 * sigma * sigma));
+}
+
 vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAtmos, vec3 kRlh, float kMie, float shRlh, float shMie, float g, vec3 kOzn, float hOzn, float wOzn) {
     // Normalize the sun and view directions.
     pSun = normalize(pSun);
@@ -185,6 +265,29 @@ vec3 atmosphere(vec3 r, vec3 r0, vec3 pSun, float iSun, float rPlanet, float rAt
         iOdRlh += odStepRlh;
         iOdMie += odStepMie;
         iOdOzn += odStepOzn;
+
+        // **Whether this sample can see the body at all**, which is the whole difference between a
+        // sky and a night sky. The secondary ray below integrates the air between the sample and
+        // the sun and never asked whether the planet was in the way: with the sun under the
+        // horizon every sample went on receiving a full beam straight through the earth, so this
+        // model had no night in it — only a dimmer day, and no elevation could make it dark. `rsi`
+        // against `rPlanet` is the missing question. Roots that lie ahead of the sample mean the
+        // ground stands between it and the body, and the sample then contributes nothing but the
+        // optical depth it has already added to the primary ray.
+        //
+        // **Inert above about one degree of elevation, geometrically rather than by hope.** The ray
+        // origin stands 1 km up, so its own horizon is 1.02 degrees down, and the furthest a
+        // primary ray can put a sample on the ground is the tangent — about 113 km, which tilts
+        // that sample's local vertical by 1.02 degrees. The two are the same number because they
+        // are the same tangent, so a body more than about 1.1 degrees up is above the horizon of
+        // every sample the integral can take, and the un-shadowed path below stays the old
+        // arithmetic in the old order, token for token. Both goldens stand at nineteen degrees.
+        vec2 planetHit = rsi(iPos, pSun, rPlanet);
+        if (planetHit.x <= planetHit.y && planetHit.y > 0.0)
+        {
+            iTime += iStepSize;
+            continue;
+        }
 
         // Calculate the step size of the secondary ray.
         float jStepSize = rsi(iPos, pSun, rAtmos).y / float(jSteps);
@@ -246,7 +349,10 @@ void main()
         normalize(textureCoordinates),  // normalized ray direction
         vec3(0, 6372e3, 0),             // ray origin
         sunDirection,                   // position of the sun
-        22.0,                           // intensity of the sun
+        // The body's intensity, not the sun's: one integral draws both, because a moonlit sky IS
+        // this integral with a source 14 magnitudes down. The scale is exactly one whenever the sun
+        // is the body, and a multiply by one is exact, so the daylight sky is the sky it was.
+        22.0 * frame.skyParams.x,       // intensity of the body the sky follows
         6371e3,                         // radius of the planet in meters
         6471e3,                         // radius of the atmosphere in meters
         // The Rayleigh blue and the Mie coefficient are the measured clear-sky values (Bruneton
@@ -321,6 +427,25 @@ void main()
         sunRadiance *= sunMaximumRadiance / sunPeak;
     }
 
+    // **The body under the horizon, which the disc has never been asked about.** `angle` above is
+    // measured against a direction, and a direction has no horizon in it, so a set sun went on being
+    // drawn under the ground and photographed into every probe — the scattering integral's own
+    // blindness, one term further on. The earth's limb *cuts* the disc rather than switching it off,
+    // which is what a sunset is: the fraction of the disc still above the horizon, over the disc's
+    // own angular radius, so the last of the sun goes at the rate its own diameter says. Applied to
+    // `sunRadiance` rather than to the arms below, so the aureole — forward-scattered light out of a
+    // beam the observer can no longer see — goes with it, and so that a body fully up runs every arm
+    // below on exactly the bits it ran on before.
+    //
+    // The observer stands 1 km up in the model above, so the horizon it sets against is 1.02 degrees
+    // down: the same tangent the integral's occlusion test turns on, stated here as its sine.
+    const float horizonDip = -0.01772;
+    float bodyVisibility = clamp((sunDirection.y - horizonDip) / sunAngularRadius + 0.5, 0.0, 1.0);
+    if (bodyVisibility < 1.0)
+    {
+        sunRadiance *= bodyVisibility;
+    }
+
     // The one view the disc must not appear in. A light probe records the world so that a surface
     // can be given the light it cannot see directly; the sun is not that light, it is the direct
     // term, and a disc in the cube would deliver it a second time — about 9% of the sun's
@@ -377,6 +502,16 @@ void main()
         float limb = 1.0 - sunLimbDarkening * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));
 
         color += sunRadiance * limb;
+    }
+
+    // The stars, after the body and before the eye's stop, because they are sky like everything else
+    // above: the graduated filter is a filter over the picture and the stars are in the picture. Zero
+    // is written by day and in every capture, and the branch is where both goldens stay exactly what
+    // they were — the day sky out-scatters a bright star by four orders of magnitude, so nothing is
+    // being hidden by the gate, only kept off the arithmetic.
+    if (frame.skyParams.y > 0.0)
+    {
+        color += starField(ray, frame.skyParams.y);
     }
 
     // No tone map here. This shader used to end with `1 - exp(-color)`, which is a display transfer

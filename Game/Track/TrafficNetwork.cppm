@@ -31,6 +31,11 @@ namespace osr
 // data: a lane graph, in metres, in the same right-handed axes glTF uses, so nothing here needs a
 // remap.
 //
+// **Superseded on 2026-09-14 and read by nothing.** Grand City Parkway's traffic and its street
+// probes come off the derived road graph now (`osr.game:RoadGraph`, docs/road-network-brief.md):
+// CSP's export is twelve near-rings with no graph in it, reaching half the city's roads. This reader
+// is left compiled, unchanged, for a track whose author did draw a CSP lane graph; nothing names it.
+//
 // **This file is deliberately wider than its one consumer today.** What reads it now is the light
 // probe placement in `CircuitScene` — a city's indirect light is a street canyon's bounce, and the
 // lanes are the only statement this project has of where the streets *are*. What reads it next is
@@ -232,7 +237,7 @@ export struct LaneProbe
 };
 
 // Every place along the network worth standing a probe, in lane order. This is a *candidate list*
-// and it is longer than any renderer will shade: `raceengine::maxIblProbes` is eight, and Grand
+// and it is longer than any renderer will shade: `raceengine::maxIblProbes` is sixteen, and Grand
 // City Parkway's 35 km of lane yields hundreds of these. Selecting from it is the caller's job —
 // `nearestLaneProbes` below is the selection the game makes today.
 export [[nodiscard]] std::vector<LaneProbe> laneProbePositions(const TrafficNetwork& network,

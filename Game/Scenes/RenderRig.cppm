@@ -1,6 +1,7 @@
 module;
 
 #include <algorithm>
+#include <cmath>
 #include <expected>
 #include <optional>
 #include <string>
@@ -87,6 +88,16 @@ export struct RigAir
     // The sun's elevation above the horizon in degrees, which is the hour this scene is set at.
     // `OSR_SUN` and nothing else; the rig's own default is the early morning it ships at.
     float sunElevationDegrees = 6.0f;
+    // The moon's elevation above the horizon in degrees, `OSR_MOON` and nothing else. Unset is the
+    // **full moon, which stands opposite the sun**: the same elevation the sun is below the horizon
+    // by, at the sun's heading turned through 180 degrees. That is what a full moon is, so the
+    // default costs no invented number and midnight comes with a high moon for free. It is read only
+    // once the sun is past astronomical twilight; above that the sun is still the body.
+    std::optional<float> moonElevationDegrees{};
+    // How many stops UNDER its own meter a night is printed, `OSR_NIGHT_STOPS` and nothing else.
+    // Read only once the moon is the body. **Unset is derived rather than placed** — see
+    // `perceivedNightStops` — and zero is the night the meter would print on its own, bit for bit.
+    std::optional<float> nightStops{};
     // The rain, 0..1-ish, `OSR_RAIN` and nothing else. Zero — unset — is the dry scene and is
     // byte-identical to a renderer with no rain in it; today the windshield shader is its one
     // reader, so this is drops on the glass and not weather in the world.
@@ -123,6 +134,42 @@ export struct RigAir
 // is enabled, and a scene that moved the dial for its cockpit puts this one back the moment the
 // view steps outside again.
 export constexpr float rigCompensation = 1.50f;
+
+// **What a night is printed at, which is a different question from how much light is in it.**
+//
+// A meter normalises. Lift a moonlit scene into the range the buffers and the meter can carry — which
+// `RigBuild::nightGain` must do, and the account of why is on that field — and the meter then prints
+// it at exactly the same brightness it prints a morning at. What comes out is a blue day, not a
+// night, and no amount of further lifting changes that, because the meter takes every stop back out.
+//
+// **A night reads as a night because it is underexposed against its own meter**, which is what every
+// photographer shooting moonlight does on purpose: the shadows go, the highlights stay, and the sky
+// sits up off the ground. So the hour moves the compensation dial and nothing else. Two stops is the
+// placed default and is a look decision rather than a measurement — `OSR_NIGHT_STOPS` is the seat's
+// way at it, and zero is the night the meter would have printed on its own.
+export [[nodiscard]] constexpr float rigCompensationAt(const bool night, const float nightStops)
+{
+    return night ? rigCompensation - nightStops : rigCompensation;
+}
+
+// **How many stops under its meter a night belongs, derived from the eye and not placed.**
+//
+// The question the dial answers is not how much light there is — `RigBuild::nightGain` settles that
+// — but how much *darker a person would say the scene looked*, which is a different quantity and a
+// much smaller one. Perceived lightness goes as the cube root of luminance: that is CIE L*'s own
+// `Y^(1/3)`, the standard statement of it, and it is why a night seventeen stops down does not read
+// as seventeen stops down to anyone standing in it. So a luminance drop of `log2(gain)` stops is a
+// *brightness* drop of a third of that.
+//
+// Under the default full moon opposite a −60 degree sun the gain is about 17.5 stops, so this
+// answers about 5.8 — against the 2.0 first placed here by hand, which is why a four-stop night
+// still read as a dawn. It follows the moon's height on its own, because a lower moon is a larger
+// gain and a darker night.
+//
+// **Its one assumption is stated**: it treats the frame as a single patch, where the eye's response
+// is per region and adapts locally. So it is a derivation and not a measurement, and
+// `OSR_NIGHT_STOPS` is the seat's way past it.
+export [[nodiscard]] float perceivedNightStops(float nightGain);
 
 // The scene's layers. The engine only ands a renderable's word against a camera's mask; what each
 // bit means is this game's, and it means two things: the world — track, sky, buildings, everything
@@ -162,6 +209,28 @@ export struct RigBuild
     std::optional<raceengine::Resource<raceengine::PostProcess>> cloudPass{};
     int cloudMarchInterval = 1;
     int cloudMarchStrips = 1;
+    // **How far the rig lifted a night's radiance to put it where the dawn stood**, handed back for
+    // the record. One by day and one at any hour the sun is still the body.
+    //
+    // It is a gain on the *light*, applied before anything is drawn, and never a film speed. A film
+    // speed cannot do this job: the meter floors its own reading at `luminanceFloor`, 1e-4, and a
+    // moonlit road sits near 3e-7 in these units, so the meter reads the floor and exposes for a
+    // scene 8.5 stops brighter than the one in front of it — after which the film is applied to an
+    // answer that was already wrong. The half-float attachments say the same thing from the other
+    // side: their smallest normal value is 6.1e-5, and an unlifted moonlit frame lives in the
+    // subnormals. Both walls sit between the scene and the meter, so the lift has to be in front of
+    // both. What it costs is the absolute ratio between a day frame and a night frame; what it keeps
+    // is every ratio inside the frame, because the light, the sky's source and the stars' anchor all
+    // take this one number.
+    float nightGain = 1.0f;
+    // Whether the moon is the body — the one bit a scene needs to make a photographic decision the
+    // rig cannot make for it. **Split metering is that decision.** The cabin meters its own pixels
+    // and so prints itself at middle grey however dark it is, which is exactly right against a
+    // sunlit world several stops above it and exactly wrong under a moon, where the cabin and the
+    // world are lit by the same body a few stops apart. Under split metering at night the cabin's
+    // reading also becomes the frame's, so the world is divided down against a cabin the meter has
+    // just lifted: the dash prints brighter than the street it is driving down.
+    bool night = false;
 };
 
 // `driverMirrors` adds the mirror camera and its map (docs/driver-mirrors-brief.md): one more scene
@@ -170,7 +239,8 @@ export struct RigBuild
 // material samples by UV. Off is the rig exactly as it was, which is what both gates run.
 export [[nodiscard]] RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera,
                                              float skyDistance = 2500.0f, RigAir air = RigAir{},
-                                             bool occlusionCulling = true, bool driverMirrors = false);
+                                             bool occlusionCulling = true, bool driverMirrors = false,
+                                             bool drawDistanceCulling = true);
 
 // The three cameras are one eye. Every field the projection and the view matrix are built from is
 // copied verbatim, so the matrices — and with them the culling, the blended sort keys and the
@@ -320,8 +390,14 @@ raceengine::Resource<raceengine::Shader> shaderNamed(raceengine::Engine& engine,
                       + ozoneAbsorption * ozoneDepth));
 }
 
+float perceivedNightStops(const float nightGain)
+{
+    return std::max(std::log2(std::max(nightGain, 1.0f)) / 3.0f, 0.0f);
+}
+
 RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera, const float skyDistance,
-                        const RigAir air, const bool occlusionCulling, const bool driverMirrors)
+                        const RigAir air, const bool occlusionCulling, const bool driverMirrors,
+                        const bool drawDistanceCulling)
 {
     // **Half past four in the afternoon, and the sun is nineteen degrees up** (the derivation is on
     // the option's default). The one number that says what time of day this
@@ -355,7 +431,41 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     const auto effectiveCloudCoverage = std::max(air.clouds, air.rain > 0.0f ? 0.9f : 0.0f);
     const auto effectiveCloudType = air.rain > 0.0f ? 0.15f : 0.7f;
 
-    // How much of the sun survives the cloud shell, Beer-Lambert and derived rather than tuned:
+    // **Which body is up, and it is one light either way** (2026-09-15). The sky is a scattering
+    // integral around a source, the world is lit by that source, the probes photograph the result —
+    // and none of that cares which body the source is. A full moon subtends 0.259 degrees against
+    // the sun's 0.266, close enough that the disc's own solid angle stands, and its light is
+    // sunlight off a 0.12-albedo rock: **fourteen apparent magnitudes down, a factor of 398107**,
+    // which is measured and published rather than chosen. So the moon is the sun, 18.6 stops back,
+    // and every pass below is the pass it was.
+    //
+    // **The hand-over is at astronomical twilight and that is the load-bearing part.** Between
+    // sunset and −18 degrees the sky is still the sun's — genuinely bright, reddening, and now drawn
+    // correctly because the integral finally knows the earth is in the way — so switching bodies
+    // there would delete twilight. At −18 the sun's sky has fallen to nothing and the moon's can
+    // stand in its place without a visible step. Above the horizon nothing here fires at all: the
+    // condition is false, the moon's tint is exactly (1,1,1), and a multiply by one is exact.
+    const auto sunElevation = glm::radians(air.sunElevationDegrees);
+    const auto moonIsTheBody = air.sunElevationDegrees < -18.0f;
+    // The full moon opposite the sun, unless the seat asked for another one.
+    const auto moonElevationDegrees = air.moonElevationDegrees.value_or(-air.sunElevationDegrees);
+    const auto bodyElevation = moonIsTheBody ? glm::radians(moonElevationDegrees) : sunElevation;
+    // Heading: the sun's own, which has no x component and so already stands at the track's stated
+    // `SUN_HEADING_ANGLE = 0`. A full moon stands 180 degrees from it, which for a vector with no x
+    // is the same vector with its z negated.
+    const auto bodyHeading = moonIsTheBody ? -1.0f : 1.0f;
+    // The lunar surface is redder than the light falling on it — regolith reflects about 0.110 at
+    // 700 nm, 0.093 at 550 and 0.077 at 450 — so moonlight is warm, and the blue every eye
+    // remembers is the Purkinje shift in that eye and not in the light. This engine has no scotopic
+    // response, so what it can state honestly is the physics: the ratio normalised to the green and
+    // then to unit Rec.709 luminance, so the tint moves the hue and the magnitude ratio alone sets
+    // the level. **Whether a stated blue cast belongs beside it is a seat question and is open.**
+    constexpr auto lunarTint = glm::vec3(1.152f, 0.974f, 0.807f);
+    // -26.74 against -12.74: fourteen magnitudes, 10^(14/2.5).
+    constexpr auto fullMoonToSun = 1.0f / 398107.0f;
+    const auto bodyTint = moonIsTheBody ? lunarTint * fullMoonToSun : glm::vec3(1.0f);
+
+    // How much of the body survives the cloud shell, Beer-Lambert and derived rather than tuned:
     // T_sun = exp(-k . coverage . path), the path being the shell's 18,000 world units of
     // thickness (1,800 m — base 15,000, top 33,000, the dome shader's own constants, thickened
     // 2026-08-26 for the cumulus towers) over sin(elevation), floored at 0.05 so a sun on or
@@ -367,8 +477,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // together; the disc's per-pixel occlusion is the map's and can disagree with this energetic
     // mean at broken coverage, a seam accepted by the brief. At coverage zero the factor is
     // exactly one and the light is bit-identical.
-    const auto sunElevation = glm::radians(air.sunElevationDegrees);
-    const auto cloudSunPath = 18000.0f / std::max(glm::sin(sunElevation), 0.05f);
+    const auto cloudSunPath = 18000.0f / std::max(glm::sin(bodyElevation), 0.05f);
     const auto sunCloudTransmittance = glm::exp(-1.55e-5f * effectiveCloudCoverage * cloudSunPath);
     // The hour moves the light's colour as well as its height, and both come from the same air:
     // the stated constants below are the accepted six-degree dawn — the anchor measurement — and
@@ -377,10 +486,58 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // bit-for-bit; higher suns come out whiter and brighter because less air is in the way, which
     // is the physics rather than a second authored colour.
     const auto sunColourScale =
-        atmosphericSunTransmittance(sunElevation) / atmosphericSunTransmittance(glm::radians(6.0f));
-    const auto sunPosition = 350.0f * glm::vec3(0.0f, glm::sin(sunElevation), glm::cos(sunElevation));
-    auto& sun = engine.scene().createLight(scene);
-    sun = raceengine::Light{.type = raceengine::LightType::Directional,
+        atmosphericSunTransmittance(bodyElevation) / atmosphericSunTransmittance(glm::radians(6.0f));
+
+    // **The night's own unit scale, and it is applied to the light and not to the film.**
+    //
+    // The first build of this scaled the film speed instead, which cannot work and the reason is
+    // worth keeping: the meter floors its own reading at `luminanceFloor`, 1e-4, and a moonlit road
+    // in these units sits near 3e-7. The meter therefore read the FLOOR rather than the scene,
+    // exposed for something 8.5 stops brighter than what was there, and the picture came out 8.5
+    // stops dark — and no film speed can undo that, because the film is applied after the reading.
+    // Underneath it a second wall: the HDR attachments are half float, whose smallest normal value
+    // is 6.1e-5, so a moonlit frame lived in the subnormals with about one significant digit in it.
+    //
+    // So the exposure moves BEFORE the buffer. This engine renders relative radiance — what a scene
+    // decided a sun was worth is already the scene's to say — and a night's unit scale is that same
+    // decision made for a night. **Every ratio inside the frame is untouched**: the light, the sky's
+    // source and the stars' anchor all take this one gain, so the moon against its sky, the stars
+    // against the ground and the sky's colour are exactly what the physics said. What is given up is
+    // the absolute ratio between a day frame and a night frame, which no display can show and which
+    // the meter would have taken out again anyway.
+    //
+    // The gain is what puts the moonlit scene where the six-degree dawn stood, so the film speed, the
+    // seed exposures and the meter's whole working range are the ones both scenes already measured.
+    // Exactly one whenever the sun is the body, and a multiply by one is exact.
+    constexpr auto rec709 = glm::vec3(0.2126f, 0.7152f, 0.0722f);
+    const auto anchorLuminance = glm::dot(glm::vec3(2.24f, 1.30f, 0.49f), rec709);
+    const auto bodyLuminance = glm::dot(glm::vec3(2.24f, 1.30f, 0.49f) * sunColourScale * bodyTint, rec709);
+    const auto nightGain = moonIsTheBody ? anchorLuminance / std::max(bodyLuminance, 1e-30f) : 1.0f;
+    // **What one engine radiance unit is worth in cd/m², which is the only thing that lets an
+    // absolute threshold mean anything downstream.** The engine renders relative radiance and the
+    // lift above has just moved what those units are worth, so the scale has to be stated by whoever
+    // moved it.
+    //
+    // Anchored on the one night measurement anybody publishes: **a full moon delivers about 0.25 lux**
+    // at normal incidence. After the lift the body's light stands at `anchorLuminance` engine units,
+    // and it *is* that full moon, so the two are the same quantity written twice. The conversion from
+    // irradiance to radiance cancels — a lambertian surface is `E·rho/pi` on both sides — so the same
+    // constant carries lux to units and cd/m² to units.
+    //
+    // Checked against the thing it has to get right: a 0.07-albedo road under this moon comes out at
+    // 0.0048 cd/m² by this scale and 0.0048 cd/m² from the published lux directly. Zero by day, where
+    // nothing reads it.
+    constexpr auto fullMoonLux = 0.25f;
+    const auto candelasPerUnit = moonIsTheBody ? fullMoonLux / anchorLuminance : 0.0f;
+    // And what that lifted night is then printed at: the gain is how much light there is, this is how
+    // dark the picture of it is. See rigCompensationAt.
+    const auto compensation =
+        rigCompensationAt(moonIsTheBody, air.nightStops.value_or(perceivedNightStops(nightGain)));
+
+    const auto sunPosition =
+        350.0f * glm::vec3(0.0f, glm::sin(bodyElevation), bodyHeading * glm::cos(bodyElevation));
+    auto& body = engine.scene().createLight(scene);
+    body = raceengine::Light{.type = raceengine::LightType::Directional,
                             .position = sunPosition,
                             .direction = -glm::normalize(sunPosition),
                             // The stated numbers are the six-degree dawn — reddened because a
@@ -393,8 +550,10 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                             // *ratio* between this and the sky is the thing being stated, because
                             // the sky's own brightness comes from the scattering integral and does
                             // not read this at all.
-                            .diffuse = glm::vec3(2.24, 1.30, 0.49) * sunColourScale * sunCloudTransmittance,
-                            .specular = glm::vec3(0.896, 0.520, 0.196) * sunColourScale * sunCloudTransmittance,
+                            .diffuse = glm::vec3(2.24, 1.30, 0.49) * sunColourScale * sunCloudTransmittance * bodyTint
+                                       * nightGain,
+                            .specular = glm::vec3(0.896, 0.520, 0.196) * sunColourScale * sunCloudTransmittance
+                                        * bodyTint * nightGain,
                             // Zero, and deliberately. Ambient used to be a floor under the diffuse
                             // term — a flat grey added everywhere, which is what a scene says when
                             // it has no indirect light and has to fake one. The light probes are
@@ -402,6 +561,28 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                             // exactly the shadowed places they were added to keep dark.
                             .ambient = glm::vec3(0.0f),
                             .attenuation = 1.0f};
+
+    // What the sky is told about the body it is drawing, and about the stars behind it.
+    //
+    // The integral's own solar intensity is scaled rather than the light's, because the two say
+    // different things: the light is the beam a surface receives, which the slant path above has
+    // already reddened and dimmed, while this is how bright the source itself is before any air —
+    // the only thing the integral needs and the only thing that makes it draw a moonlit sky.
+    scene.skySourceIntensityScale = moonIsTheBody ? fullMoonToSun * nightGain : 1.0f;
+    // A magnitude-zero star, derived and not placed. The sun's stated dawn colour divided by the air
+    // it was stated through is the sun above the atmosphere in this engine's own units; the sun is
+    // apparent magnitude -26.74, so a magnitude-zero star is 10^(-26.74/2.5) of it. Luminance rather
+    // than a colour, because the shader tints each star by its own temperature.
+    //
+    // **Drawn only once the sun is under the horizon**, and that gate is about the goldens rather
+    // than about the sky: a bright star lands four orders of magnitude under a daylight sky and
+    // would be invisible anyway, so nothing is lost by keeping it off the day's arithmetic entirely.
+    constexpr auto sunApparentMagnitude = -26.74f;
+    const auto sunAboveTheAir = glm::vec3(2.24f, 1.30f, 0.49f) / atmosphericSunTransmittance(glm::radians(6.0f));
+    scene.starZeroMagnitudeRadiance =
+        air.sunElevationDegrees < 0.0f
+            ? glm::dot(sunAboveTheAir, rec709) * glm::pow(10.0f, sunApparentMagnitude / 2.5f) * nightGain
+            : 0.0f;
 
     engine.camera().setRoll(camera, 0, 1, 0);
 
@@ -413,6 +594,8 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                            engine.resource().loadTextFileAsync("assets/Shaders/WindshieldFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/CarpaintFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/MirrorFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/CanvasVertexShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/CanvasFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyVertexShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/DepthOnlyFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/ColourFragmentShader.glsl"),
@@ -421,6 +604,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                            engine.resource().loadTextFileAsync("assets/Shaders/LuminanceFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/CompositeFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/WorldRainFragmentShader.glsl"),
+                           engine.resource().loadTextFileAsync("assets/Shaders/ScotopicFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/VolumetricFogFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/FogMarchFragmentShader.glsl"),
                            engine.resource().loadTextFileAsync("assets/Shaders/CloudDomeFragmentShader.glsl"),
@@ -449,9 +633,11 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     }
 
     auto [presentationVert, presentationFrag, vert, pbrFragmentShader, blinnPhongFragmentShader,
-          windshieldFragmentShader, carpaintFragmentShader, mirrorFragmentShader, depthVertexShader,
+          windshieldFragmentShader, carpaintFragmentShader, mirrorFragmentShader, canvasVertexShader,
+          canvasFragmentShader, depthVertexShader,
           depthFragmentShader, colourFragmentShader, hdrVertexShader, hdrFragmentShader, luminanceFragmentShader,
-          compositeFragmentShader, worldRainFragmentShader, volumetricFogFragmentShader, fogMarchFragmentShader,
+          compositeFragmentShader, worldRainFragmentShader, scotopicFragmentShader, volumetricFogFragmentShader,
+          fogMarchFragmentShader,
           cloudDomeFragmentShader,
           prepassVertexShader, prepassFragmentShader, occlusionGridFragmentShader, gtaoFragmentShader, aoBlurFragmentShader,
           aoUpsampleFragmentShader,
@@ -511,6 +697,18 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // exporter writes no `extras.shader` for it, so the scene names it (CircuitScene).
     orThrow(engine.shader().createShader(
         "mirror", ShaderDescriptor{.vertexShaderSource = vert, .fragmentShaderSource = mirrorFragmentShader}));
+    // The canvas pass (docs/instrument-cluster-brief.md §6): text from a distance-field atlas and
+    // images into a target of their own or over the frame. Declared a canvas shader so the backend
+    // builds it on the canvas layout and not the fullscreen one. And the screen: the pbr shader a
+    // third time with SCREEN_OVERLAY defined, which composites the scene's canvas over the shaded
+    // surface of every material carrying a `ScreenSurface` — the instrument cluster's displays,
+    // bound by the circuit scene the way the mirror glass is.
+    orThrow(engine.shader().createShader("canvas", ShaderDescriptor{.vertexShaderSource = canvasVertexShader,
+                                                                    .fragmentShaderSource = canvasFragmentShader,
+                                                                    .canvas = true}));
+    orThrow(engine.shader().createShader("screen", ShaderDescriptor{.vertexShaderSource = vert,
+                                                                    .fragmentShaderSource = pbrFragmentShader,
+                                                                    .defines = {{"SCREEN_OVERLAY", "1"}}}));
 
     // The cascades' depth pass. Position through the light's matrix, nothing written: the target
     // has no colour attachment for a fragment output to reach.
@@ -545,6 +743,12 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     auto worldRainShader = orThrow(
         engine.shader().createShader("world rain", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
                                                                     .fragmentShaderSource = worldRainFragmentShader}));
+
+    // The eye at night. Registered always so that a shader fault is a startup fault at every hour and
+    // not one that waits for a moon; built into the chain only when the rig built a night.
+    auto scotopicShader = orThrow(
+        engine.shader().createShader("scotopic", ShaderDescriptor{.vertexShaderSource = hdrVertexShader,
+                                                                  .fragmentShaderSource = scotopicFragmentShader}));
 
     // The volumetric fog, moved out of the scene shaders (2026-08-25): one fullscreen pass over the
     // world buffer, before the composite, marching the same cascades through the fullscreen
@@ -636,6 +840,19 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // however far the eye has actually moved since the grid was photographed. Neither is measured
     // on this scene, and the knob for finding out is `OSR_OCCLUSION=off`, which is the A/B for
     // whether the culler is what deleted something rather than a dial for how much.
+    // The draw distance the content states, honoured on the world camera — which is the eye the
+    // statement is about, and the only view here that draws a track. The occlusion prepass is a
+    // copy of this camera and inherits it, which is required rather than convenient: the two passes
+    // must reject exactly the same primitives or the prepass reports occlusion from surfaces the
+    // shading pass never draws.
+    //
+    // Grand City Parkway is what this exists for. 923 of its 1033 meshes name a distance and the
+    // near and far versions of a building are both in the file; drawn together they share a volume
+    // and take the depth test from each other in patches. A track that names no distances is
+    // unaffected — Mount Panorama names none, so both parity gates see the frame they saw before.
+    // `OSR_DRAW_DISTANCE=off` is the A/B.
+    camera.drawDistanceCulling = drawDistanceCulling;
+
     if (occlusionCulling)
     {
         auto occlusionGridShader = orThrow(engine.shader().createShader(
@@ -696,7 +913,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // own buffer since the split was built.
     orThrow(engine.autoExposure().enable(
         camera, raceengine::CreateAutoExposureDTO{.shader = luminanceShader,
-                                                  .meter = raceengine::AutoExposure{.compensation = rigCompensation,
+                                                  .meter = raceengine::AutoExposure{.compensation = compensation,
                                                                                     .centreWeighting = 1.00f,
                                                                                     .coverageWeighting = 1.00f}}));
     camera.autoExposure.enabled = false;
@@ -1109,6 +1326,46 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
         framePane = rainColour.front();
     }
 
+    // **The eye, last of the world's chain and only ever at night** (2026-09-15,
+    // docs/night-sky-brief.md §8). It rides here rather than inside the tone map for two reasons that
+    // both come from the same fact: the threshold it tests is an absolute luminance in cd/m², so it
+    // has to run on scene-referred radiance *before* the meter's exposure removes the level, and it
+    // has to run before bloom so that a night's bloom comes off the moon and the lights — which stay
+    // photopic and keep their colour — and not off a sky the rods have just flattened.
+    //
+    // **Built only when the rig built a night**, which is what makes the day free rather than cheap:
+    // the pass does not exist, `framePane` is the buffer it already was, and both goldens are the
+    // frames they were with no branch anywhere.
+    //
+    // The blended draws the frame camera lays over this afterwards — the windscreen, and the
+    // cluster's thirty-three layers — do not pass through it. That is a seam and it is the right way
+    // round: an instrument cluster is self-luminous and sits far above the mesopic range, so it is a
+    // cone image in a rod scene, which is exactly what a real dashboard is at night.
+    if (moonIsTheBody)
+    {
+        auto eyePass = orThrow(engine.postProcess().create("scotopic", scotopicShader));
+        engine.postProcess().addInput(eyePass, framePane);
+        // x is the scene's own calibration and the one number that makes an absolute threshold mean
+        // anything here; y is how much of the conversion to apply, one being the whole eye.
+        engine.postProcess().setParameters(eyePass, glm::vec4(candelasPerUnit, 1.0f, 0.0f, 0.0f));
+        engine.camera().addPostProcess(carCamera, eyePass);
+
+        const auto eyeOutput = engine.memoryStorage().postProcesses.get(eyePass).output;
+        if (!eyeOutput.has_value())
+        {
+            raceengine::fail("the scotopic pass has no output buffer");
+        }
+
+        const auto eyeColour = engine.fbo().getAttachmentsOfType(
+            engine.memoryStorage().frameBuffers.get(eyeOutput.value()), FboAttachmentType::Color);
+        if (eyeColour.empty())
+        {
+            raceengine::fail("the scotopic pass's output has no colour attachment");
+        }
+
+        framePane = eyeColour.front();
+    }
+
     const auto frameOutput = orThrow(engine.fbo().compose({framePane, prepassDepth.front()}));
 
     auto& frameCamera = orThrow(engine.scene().createCamera(
@@ -1155,7 +1412,7 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     orThrow(engine.autoExposure().enable(
         frameCamera, raceengine::CreateAutoExposureDTO{
                          .shader = luminanceShader,
-                         .meter = raceengine::AutoExposure{.compensation = rigCompensation, .centreWeighting = 1.00f}}));
+                         .meter = raceengine::AutoExposure{.compensation = compensation, .centreWeighting = 1.00f}}));
 
     // Bloom, ahead of the tone map in the camera's chain for the same reason the meter is: what it
     // produces is consumed by the pass that follows it.
@@ -1237,23 +1494,70 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
     // offset and the PCF sat on top. At 0.9 the first split lands near 5.6 m and a cascade-0 texel
     // is 6.5 mm, which is what makes a shadow cast *into the car* read as an edge. The price is paid
     // at the far end, where the last cascade coarsens to ~12 cm texels beyond 40 m — softness that
-    // distance and the PCF were already hiding.
-    orThrow(engine.shadow().enable(scene, sun, camera,
+    // distance and the PCF were already hiding. The bands are 5.6, 14.0, 41.9 and 500 m, and the
+    // first three of those are the scheme's own — see the reach below for why the last is not.
+    //
+    // **Moving cascade 2 was tried on 2026-09-13 and withdrawn.** Pushing it out to 150 m to make
+    // the live band cover more of the view cost its texels: a cascade's square is fitted on its
+    // band's far face, so a 150 m edge at 2048 is 22.9 cm against 6.4 cm at 41.9 m, and shadows at
+    // 20 m came back 3.6x coarser. That is why the reach below is carried by cascade 3 alone.
+    //
+    // **Cascade 2 is live and the cache starts at 3** (2026-09-13, from the seat: "shadows are slow
+    // to update for fairly nearby geometry"). A held map replays whatever stood in it at the refit,
+    // and the whole 386-car city is in these cascades — so every traffic and police car between 14 m
+    // and 42 m left its shadow behind for up to 9 m of the player's own travel, and for ever while
+    // he stood still. Cascade 2 is re-rendered every frame now, for one 2048 depth pass. Cascade 3
+    // holds, and carries the whole of the reach below.
+    //
+    // **The reach is 500 m, and the last band alone carries the extension** (2026-09-13, from the
+    // seat: "the far shadows pop in and need to be extended"). A fragment past the reach is lit and
+    // the last tenth of it fades to lit (`shadowDistanceFadePercent`), so at 200 m the fade ran
+    // 180 m to 200 m — four seconds of motorway ahead of the car, and on a city that line crosses
+    // every building's shadow on the road as it arrives. Raising `distance` on its own cannot do
+    // it: at this reach lambda 0.9 is still mostly the uniform arm, so 2000 -> 5000 drags cascade 0
+    // from 5.6 m out to 10.7 m and doubles its texels, which is exactly the near sharpness the
+    // lambda was chosen for. So the bands are stated instead, and the first three are the scheme's
+    // own numbers read back from the function the service would have called — 5.6, 14.0 and
+    // 41.9 m, unchanged to the bit — with the whole extension landing on cascade 3, which now
+    // carries 41.9 m to 500 m.
+    //
+    // The price is that cascade 3's square grows with its band: its texels go from ~31 cm to
+    // ~78 cm, because a cascade is fitted on its band's far face. At 200 m to 500 m a car or a
+    // building edge is PCF mush at either size, and `farResolution` is the dial if it reads too
+    // soft. `casterExtent` is NOT scaled with it: it is how far behind the slice a caster is still
+    // caught, and 150 m is what it was at the shorter reach — a low sun throwing a shadow in from
+    // further back than that was already missing it.
+    constexpr auto nearBandLambda = 0.9f;
+    constexpr auto nearBandReach = 2000.0f;
+    const auto bands = raceengine::cascadeSplitDistances(camera.nearClippingPlane, nearBandReach, nearBandLambda);
+
+    orThrow(engine.shadow().enable(scene, body, camera,
                                    raceengine::CreateShadowCascadesDTO{.depthShader = depthShader,
                                                                        .resolution = 4096,
                                                                        .farResolution = 2048,
                                                                        .cacheFarCascades = true,
-                                                                       .lambda = 0.9f,
-                                                                       .distance = 2000.0f,
+                                                                       .cacheFromCascade = 3,
+                                                                       .lambda = nearBandLambda,
+                                                                       .distance = nearBandReach,
+                                                                       .splitDistances = {bands[1], bands[2],
+                                                                                          bands[3], 5000.0f},
                                                                        .casterExtent = 1500.0f}));
 
-    // The car is masked out of the cached far cascades, and it is a correctness rule rather than
-    // a saving: a held map replays whatever stood in it at the refit, and the one thing in these
-    // scenes that moves is the car — held with it in, a stale car shadow would trail the real one
-    // across far ground. Consistently absent instead: at the far cascades' 24 cm texels a car's
-    // shadow was PCF mush anyway, and the pixels a car shadows sit within metres of it, in the
-    // near cascades' own bands.
-    for (auto index = 2u; index < scene.shadows.cascades.size(); index++)
+    // The car is masked out of the *held* cascade, and it is a correctness rule rather than a
+    // saving: a held map replays whatever stood in it at the refit, so a car in it would trail a
+    // stale shadow across far ground. Consistently absent instead — at cascade 3's ~78 cm texels a
+    // car's shadow is PCF mush anyway, and the pixels a car shadows sit within metres of it, in the
+    // live cascades' own bands. The boundary is the cache's own and not a fixed 2: a live cascade
+    // draws the car where the car is, so the reason to leave it out goes with the hold.
+    //
+    // **Traffic is still in the held cascade** and is the one thing this does not cover: the city's
+    // cars are on `worldLayer`, so a car between 42 m and 500 m holds its shadow for up to 105 m of
+    // the player's travel — the hold budget is a fraction of the slice's own radius, so extending
+    // the reach lengthened it. Leaving them out would want a layer bit of their own, which is a wider
+    // change than the seat report asked for.
+    constexpr auto heldFromCascade = 3u;
+
+    for (auto index = heldFromCascade; index < scene.shadows.cascades.size(); index++)
     {
         if (scene.shadows.cascades[index].camera != nullptr)
         {
@@ -1261,9 +1565,9 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
         }
     }
 
-    // And the near two draw the world and the car, and not the mirror's stand-ins: a second copy
+    // And the live ones draw the world and the car, and not the mirror's stand-ins: a second copy
     // of a car casts the shadow the first already casts, for the price of drawing it twice.
-    for (auto index = 0u; index < 2u && index < scene.shadows.cascades.size(); index++)
+    for (auto index = 0u; index < heldFromCascade && index < scene.shadows.cascades.size(); index++)
     {
         if (scene.shadows.cascades[index].camera != nullptr)
         {
@@ -1356,7 +1660,9 @@ RigBuild buildRenderRig(raceengine::Engine& engine, Scene& scene, Camera& camera
                     .cloudCoverage = effectiveCloudCoverage,
                     .cloudPass = domePass,
                     .cloudMarchInterval = air.cloudMarchInterval,
-                    .cloudMarchStrips = air.cloudMarchStrips};
+                    .cloudMarchStrips = air.cloudMarchStrips,
+                    .nightGain = nightGain,
+                    .night = moonIsTheBody};
 }
 
 void CloudMarchSchedule::bind(const RigBuild& built)

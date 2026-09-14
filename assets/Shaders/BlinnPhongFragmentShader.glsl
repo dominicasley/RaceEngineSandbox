@@ -97,7 +97,7 @@ struct Light {
 struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
-    vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
+    vec4 boxMax;               // xyz world maximum, w the fade in [0,1], negative for the global probe
     vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
@@ -138,7 +138,7 @@ layout(set = SET_MATERIAL, binding = 0) uniform MaterialData {
     vec4 baseColour;
     vec4 roughMetal;       // x roughness, y metalness, z alpha cutoff (0 = no test)
     ivec4 useTextures;     // x diffuse, y normal, z specular, w emissive
-    ivec4 useTextures2;    // x occlusion, y opaque, z this material states the block below
+    ivec4 useTextures2;    // x occlusion, y opaque, z states the block below, w receives screen AO
     mat4 textureTransform; // KHR_texture_transform, upper 3x3
     // x ambient, y diffuse, z specular, w specular exponent. Filled for every material: a material
     // that states none gets the neutral matte default, which is why nothing below branches on
@@ -422,7 +422,7 @@ vec3 fogAmbientRadiance()
 {
     for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
     {
-        if (frame.probes[index].boxMax.w == 0.0)
+        if (frame.probes[index].boxMax.w >= 0.0)
         {
             continue;
         }
@@ -629,7 +629,7 @@ vec3 evaluateIrradiance(vec4 coefficients[SH_COEFFICIENTS], vec3 direction)
 // multiplied, so a fragment near a corner falls off in both directions at once.
 float probeWeight(int index, vec3 worldPosition)
 {
-    if (frame.probes[index].boxMax.w != 0.0)
+    if (frame.probes[index].boxMax.w < 0.0)
     {
         // The global probe has no bound. Its weight is what the local probes left over.
         return 1.0;
@@ -639,7 +639,11 @@ float probeWeight(int index, vec3 worldPosition)
                               frame.probes[index].boxMax.xyz - worldPosition);
     vec3 ramp = clamp(insideDistance / max(frame.probes[index].boxMin.w, 0.0001), 0.0, 1.0);
 
-    return ramp.x * ramp.y * ramp.z;
+    // boxMax.w is this probe's fade, and it multiplies the box ramp rather than replacing it: the
+    // box says which fragments this probe is about and the fade says how much of it the frame is
+    // taking at all. The engine ramps it to zero before the frame's ranking can evict the probe,
+    // so a probe joining or leaving the set changes nothing (uploadProbes).
+    return ramp.x * ramp.y * ramp.z * frame.probes[index].boxMax.w;
 }
 
 // The indirect diffuse light arriving here, for unit albedo: the scene's probes blended by how far
@@ -658,7 +662,7 @@ vec3 indirectDiffuse(vec3 worldNormal)
 
     for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
     {
-        if (frame.probes[index].boxMax.w != 0.0)
+        if (frame.probes[index].boxMax.w < 0.0)
         {
             continue;
         }
@@ -692,7 +696,7 @@ vec3 indirectDiffuse(vec3 worldNormal)
     {
         for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
         {
-            if (frame.probes[index].boxMax.w == 0.0)
+            if (frame.probes[index].boxMax.w >= 0.0)
             {
                 continue;
             }
@@ -1009,7 +1013,13 @@ void main()
     // knows about, and darkening it here would be the same occluder counted twice. A transparent
     // surface reads none of it — the buffer holds one opaque surface per pixel and that surface is
     // whatever is behind this glass.
-    float screenOcclusion = material.useTextures2.y != 0
+    //
+    // A surface that states it does not receive the screen term reads none of it either
+    // (Material::receivesScreenOcclusion, useTextures2.w): the gather runs at half resolution, so
+    // geometry a metre from a moving eye takes its occlusion from a different texel every frame and
+    // crawls. Such a surface carries its occlusion baked into the ORM red channel, which is the
+    // `occlusion` above and is multiplied in regardless.
+    float screenOcclusion = material.useTextures2.y != 0 && material.useTextures2.w != 0
         ? texture(ambientOcclusionMap, gl_FragCoord.xy / vec2(textureSize(ambientOcclusionMap, 0))).r
         : 1.0;
 

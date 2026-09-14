@@ -71,6 +71,43 @@ public:
                                           .orangePeel = 0.0f,
                                           .orangePeelScale = 30.0f};
 
+        // **This car does not receive screen-space ambient occlusion**, and its materials are where
+        // that is said (Material::receivesScreenOcclusion). The GTAO gather and its blur run at half
+        // resolution under a joint-bilateral upsample, and a cockpit is dense geometry three
+        // quarters of a metre from an eye that never stops moving by a fraction of a pixel: which
+        // half-resolution texel a pixel takes its occlusion from changes every frame, and the whole
+        // instrument face crawls (Dominic, from the seat 2026-08-27, "AO artifacts are obvious on
+        // something so close with minor movement", and again 2026-09-14 on the dash).
+        //
+        // It stays in the occlusion prepass and goes on occluding everything else — the contact
+        // shadow under its tyres is that pass's, and so is the layered frame's shared pre-Z. Only
+        // the reading stops. Until the interior's own occlusion is baked into the ORM red channel
+        // the cockpit's creases are unoccluded, which is the trade this takes.
+        //
+        // Stated here rather than in a scene so that the apron fixture and the circuit say the same
+        // thing: the apron is the only gate watching this car's materials.
+        if (const auto* loadedModel = engine.memoryStorage().models.find(model))
+        {
+            for (const auto& meshKey : loadedModel->meshes)
+            {
+                const auto* mesh = engine.memoryStorage().meshes.find(meshKey);
+                if (mesh == nullptr)
+                {
+                    continue;
+                }
+
+                for (const auto& primitive : mesh->meshPrimitives)
+                {
+                    if (primitive.material.has_value())
+                    {
+                        engine.memoryStorage().materials.mutate(
+                            primitive.material.value(),
+                            [](raceengine::Material& material) { material.receivesScreenOcclusion = false; });
+                    }
+                }
+            }
+        }
+
         const auto drawableComponent = engine.entity().addComponent<Drawable>(entity, created);
 
         // Where it stands is not this entity's: on the circuit the vehicle model writes the node

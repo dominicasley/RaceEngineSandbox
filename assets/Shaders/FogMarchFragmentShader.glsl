@@ -27,7 +27,7 @@ struct Light {
 struct Probe {
     vec4 irradiance[SH_COEFFICIENTS];
     vec4 boxMin;               // xyz world minimum of the influence box, w the blend band's width
-    vec4 boxMax;               // xyz world maximum, w non-zero for the scene's global probe
+    vec4 boxMax;               // xyz world maximum, w the fade in [0,1], negative for the global probe
     vec4 position;             // xyz where it was captured, w its slice of probeSpecular (-1: none, see below)
 };
 
@@ -131,7 +131,7 @@ vec3 fogAmbientRadiance()
 {
     for (int index = 0; index < frame.probeParams.x && index < MAX_IBL_PROBES; index++)
     {
-        if (frame.probes[index].boxMax.w == 0.0)
+        if (frame.probes[index].boxMax.w >= 0.0)
         {
             continue;
         }
